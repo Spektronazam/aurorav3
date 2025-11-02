@@ -126,6 +126,134 @@ local _TaskSpawn = clonefunction(task.spawn)
 
 local workspaceRaycast = workspace.Raycast
 
+-- Enhanced Error Handling System
+local ErrorHandler = {}
+ErrorHandler.LogEnabled = true
+ErrorHandler.MaxRetries = 3
+ErrorHandler.RetryDelay = 0.1
+
+function ErrorHandler.SafeCall(func, ...)
+    local success, result = _Pcall(func, ...)
+    if not success then
+        if ErrorHandler.LogEnabled then
+            warn("[Aurora Error Handler] Function call failed:", result)
+        end
+        return nil, result
+    end
+    return result
+end
+
+function ErrorHandler.SafeCallWithRetry(func, maxRetries, ...)
+    maxRetries = maxRetries or ErrorHandler.MaxRetries
+    local args = {...}
+    
+    for attempt = 1, maxRetries do
+        local success, result = _Pcall(func, _TableUnpack(args))
+        if success then
+            return result
+        end
+        
+        if ErrorHandler.LogEnabled and attempt < maxRetries then
+            warn("[Aurora Error Handler] Attempt", attempt, "failed, retrying:", result)
+        end
+        
+        if attempt < maxRetries then
+            _TaskWait(ErrorHandler.RetryDelay)
+        end
+    end
+    
+    if ErrorHandler.LogEnabled then
+        warn("[Aurora Error Handler] All retry attempts failed for function call")
+    end
+    return nil
+end
+
+function ErrorHandler.SafeGetService(serviceName)
+    return ErrorHandler.SafeCallWithRetry(function()
+        return cloneref(_GetService(game, serviceName))
+    end, 2)
+end
+
+function ErrorHandler.SafeFindFirstChild(parent, childName, timeout)
+    if not parent then return nil end
+    timeout = timeout or 5
+    
+    local startTime = _Tick()
+    while _Tick() - startTime < timeout do
+        local success, child = _Pcall(_FindFirstChild, parent, childName)
+        if success and child then
+            return child
+        end
+        _TaskWait(0.1)
+    end
+    
+    if ErrorHandler.LogEnabled then
+        warn("[Aurora Error Handler] Failed to find child:", childName, "in parent:", parent.Name or "Unknown")
+    end
+    return nil
+end
+
+function ErrorHandler.SafeCharacterAccess(player)
+    if not player then return nil end
+    
+    local character = player.Character
+    if not character then return nil end
+    
+    local humanoid = ErrorHandler.SafeFindFirstChild(character, "Humanoid", 1)
+    local rootPart = ErrorHandler.SafeFindFirstChild(character, "HumanoidRootPart", 1)
+    
+    if not humanoid or not rootPart then return nil end
+    
+    -- Additional health check
+    local success, health = _Pcall(function() return humanoid.Health end)
+    if not success or health <= 0 then return nil end
+    
+    return character, humanoid, rootPart
+end
+
+function ErrorHandler.SafeRemoteCall(remote, ...)
+    if not remote then return false end
+    
+    return ErrorHandler.SafeCall(function(...)
+        if remote.ClassName == "RemoteEvent" then
+            remote:FireServer(...)
+        elseif remote.ClassName == "RemoteFunction" then
+            return remote:InvokeServer(...)
+        end
+    end, ...)
+end
+
+-- Safe property access with fallback
+function ErrorHandler.SafeGetProperty(obj, property, fallback)
+    return ErrorHandler.SafeCall(function()
+        if obj and obj[property] ~= nil then
+            return obj[property]
+        end
+        return fallback
+    end) or fallback
+end
+
+-- Safe property setting with validation
+function ErrorHandler.SafeSetProperty(obj, property, value)
+    return ErrorHandler.SafeCall(function()
+        if obj and property and value ~= nil then
+            obj[property] = value
+            return true
+        end
+        return false
+    end)
+end
+
+-- Safe table access with fallback
+function ErrorHandler.SafeTableAccess(tbl, key, fallback)
+    return ErrorHandler.SafeCall(function()
+        if type(tbl) == "table" and tbl[key] ~= nil then
+            return tbl[key]
+        end
+        return fallback
+    end) or fallback
+end
+
 repeat _TaskWait() until _IsLoaded(game)
 if getgenv().Loaded ~= nil then return end
 
@@ -134,28 +262,41 @@ local Build = "AuroraNN"
 local LoadTick = _Tick()
 local checkcalled = false
 
--- Core Vars
-local HttpService = cloneref(_GetService(game,"HttpService"))
-local InputService = cloneref(_GetService(game,"UserInputService"))
-local replicatedStorage = cloneref(_GetService(game,"ReplicatedStorage"))
-local Stats = cloneref(_GetService(game, "Stats"))
-local TextService = cloneref(_GetService(game,"TextService"))
-local Teams = cloneref(_GetService(game,"Teams"))
-local Players = cloneref(_GetService(game,"Players"))
-local RunService = cloneref(_GetService(game,"RunService"))
-local TweenService = cloneref(_GetService(game,"TweenService"))
+-- Core Vars with Error Handling
+local HttpService = ErrorHandler.SafeGetService("HttpService")
+local InputService = ErrorHandler.SafeGetService("UserInputService")
+local replicatedStorage = ErrorHandler.SafeGetService("ReplicatedStorage")
+local Stats = ErrorHandler.SafeGetService("Stats")
+local TextService = ErrorHandler.SafeGetService("TextService")
+local Teams = ErrorHandler.SafeGetService("Teams")
+local Players = ErrorHandler.SafeGetService("Players")
+local RunService = ErrorHandler.SafeGetService("RunService")
+local TweenService = ErrorHandler.SafeGetService("TweenService")
+
+-- Validate critical services
+if not Players or not RunService then
+    error("[Aurora] Critical services failed to load. Cannot continue.")
+end
 local executor = syn and "Synapse" or nil
 local platform = "Windows"
 if not executor then
     executor, platform = identifyexecutor()
 end
-local Lighting = cloneref(_GetService(game,"Lighting"))
-local RenderStepped = RunService.RenderStepped
-local LocalPlayer = Players.LocalPlayer
-local camera = cloneref(workspace.CurrentCamera)
-local viewportSize = camera.ViewportSize
-local Mouse = _GetMouse(LocalPlayer)
-local SoundService = cloneref(_GetService(game,"SoundService"))
+local Lighting = ErrorHandler.SafeGetService("Lighting")
+local RenderStepped = RunService and RunService.RenderStepped
+local LocalPlayer = Players and Players.LocalPlayer
+local camera = ErrorHandler.SafeCall(function() return cloneref(workspace.CurrentCamera) end)
+local viewportSize = camera and ErrorHandler.SafeCall(function() return camera.ViewportSize end)
+local Mouse = LocalPlayer and ErrorHandler.SafeCall(_GetMouse, LocalPlayer)
+local SoundService = ErrorHandler.SafeGetService("SoundService")
+
+-- Validate critical components
+if not LocalPlayer then
+    error("[Aurora] LocalPlayer not found. Cannot continue.")
+end
+if not camera then
+    error("[Aurora] Camera not found. Cannot continue.")
+end
 local CoreGui = _Instancenew("ScreenGui")
 local spring = loadstring(_HttpGet(game, "https://raw.githubusercontent.com/Quenty/NevermoreEngine/5a429e871d54646ba54011c18321e77afa76d657/Modules/Shared/Physics/Spring.lua"))()
 local Signaling = loadstring(_HttpGet(game, "https://raw.githubusercontent.com/Quenty/NevermoreEngine/version2/Modules/Shared/Events/Signal.lua"))()
@@ -163,14 +304,38 @@ local Events = replicatedStorage:WaitForChild("Events", 1/0)
 local HitPart = Events:WaitForChild("HitPart", 1/0)
 local playerSpawned = Signaling.new()
 local playerDied = Signaling.new()
-local Crosshairs = LocalPlayer.PlayerGui.GUI.Crosshairs
+local Crosshairs = ErrorHandler.SafeCall(function()
+    local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+    if not playerGui then return nil end
+    local gui = ErrorHandler.SafeFindFirstChild(playerGui, "GUI", 2)
+    if not gui then return nil end
+    return ErrorHandler.SafeFindFirstChild(gui, "Crosshairs", 2)
+end)
+
 local ScriptCacheFolder = _Instancenew("Folder", workspace)
 ScriptCacheFolder.Name = "ScriptCacheFolder"
 CoreGui.ResetOnSpawn = false
 
-local ChatFrame = LocalPlayer.PlayerGui.GUI.Main.Chats
-ChatFrame.DisplayChat:Destroy()
-local ChatUI = ChatFrame.Parent
+local ChatFrame = ErrorHandler.SafeCall(function()
+    local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+    if not playerGui then return nil end
+    local gui = ErrorHandler.SafeFindFirstChild(playerGui, "GUI", 2)
+    if not gui then return nil end
+    local main = ErrorHandler.SafeFindFirstChild(gui, "Main", 2)
+    if not main then return nil end
+    return ErrorHandler.SafeFindFirstChild(main, "Chats", 2)
+end)
+
+local ChatUI
+if ChatFrame then
+    ErrorHandler.SafeCall(function()
+        local displayChat = ErrorHandler.SafeFindFirstChild(ChatFrame, "DisplayChat", 1)
+        if displayChat then
+            displayChat:Destroy()
+        end
+    end)
+    ChatUI = ChatFrame.Parent
+end
 
 do
     local ProtectGui = protectgui or protect_gui or (syn and syn.protect_gui) or (function(p) 
@@ -5142,7 +5307,13 @@ local RavenENV = {
     },
     Utility = {},
     Cache = {
-        Client = getsenv(_FindFirstChild(LocalPlayer, "PlayerGui").Client),
+        Client = ErrorHandler.SafeCall(function()
+            local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+            if not playerGui then return nil end
+            local client = ErrorHandler.SafeFindFirstChild(playerGui, "Client", 2)
+            if not client then return nil end
+            return getsenv(client)
+        end),
         HitModifiers = {
             ["Head"] = 4,
             ["FakeHead"] = 4,
@@ -6047,11 +6218,13 @@ do --Funcs
             ["Metallic"] = _Materials.Glass
         }
         local IsPlayerAlive = function(Player)
-            if Player and _FindFirstChild(Player, "Humanoid") and _FindFirstChild(Player, "Humanoid").Health > 0 then
-                return true
-            else
-                return false
-            end
+            return ErrorHandler.SafeCall(function()
+                if not Player then return false end
+                local humanoid = _FindFirstChild(Player, "Humanoid")
+                if not humanoid then return false end
+                local health = humanoid.Health
+                return health and health > 0
+            end) or false
         end
         Utility.IsPlayerAlive = IsPlayerAlive
         function Utility.CryptPosition(Pos) 
@@ -6068,21 +6241,32 @@ do --Funcs
         end
 		    	 
         function Utility.UpdAmmo()
-            local equipped = Cache.Client.equipped
-            local ammo = 0
-            local primm = Cache.Client.vars.ammocount
-            local secondary = Cache.Client.vars.ammocount2
-            if equipped == "primary" and primm >= 1 then
-                ammo = primm - 1;
-                Cache.Client.vars.ammocount = ammo
-            elseif equipped == "secondary" and secondary >= 1 then
-                ammo = secondary - 1;
-                Cache.Client.vars.ammocount2 = ammo;
-            end
-            if ammo == 0 and _FindFirstChild(Cache.Client.fgun, "Melee") == nil then
-                Cache.Client.autoreload()
-            end
-            Cache.Client.countammo()        
+            ErrorHandler.SafeCall(function()
+                if not Cache.Client or not Cache.Client.vars then return end
+                
+                local equipped = ErrorHandler.SafeGetProperty(Cache.Client, "equipped", "none")
+                local ammo = 0
+                local primm = ErrorHandler.SafeTableAccess(Cache.Client.vars, "ammocount", 0)
+                local secondary = ErrorHandler.SafeTableAccess(Cache.Client.vars, "ammocount2", 0)
+                
+                if equipped == "primary" and primm and primm >= 1 then
+                    ammo = primm - 1
+                    ErrorHandler.SafeSetProperty(Cache.Client.vars, "ammocount", ammo)
+                elseif equipped == "secondary" and secondary and secondary >= 1 then
+                    ammo = secondary - 1
+                    ErrorHandler.SafeSetProperty(Cache.Client.vars, "ammocount2", ammo)
+                end
+                
+                if ammo == 0 and Cache.Client.fgun and _FindFirstChild(Cache.Client.fgun, "Melee") == nil then
+                    if Cache.Client.autoreload then
+                        Cache.Client.autoreload()
+                    end
+                end
+                
+                if Cache.Client.countammo then
+                    Cache.Client.countammo()
+                end
+            end)        
         end
         function Utility.FakeShoot(Params)
             local client = Cache and Cache.Client
@@ -6553,12 +6737,15 @@ do --Funcs
             
             for _, p in next, PlayerModule.storage do
                 if p.alive and not p.god then
-                    HitPart:FireServer(
+                    ErrorHandler.SafeRemoteCall(HitPart,
                         p.head,
                         {X = 0/0, Y = 0/0, Z = 0/0},
                         "Banana",
                         1,
-                        _FindFirstChild(LocalPlayer.Character, "Gun"),
+                        ErrorHandler.SafeCall(function()
+                            local char = LocalPlayer.Character
+                            return char and _FindFirstChild(char, "Gun")
+                        end),
                         nil, math.huge, false, false,
                         _Vector3New(), 1, _Vector3New(), true
                     )
@@ -6598,16 +6785,34 @@ do --Funcs
                 return
             end
 
-            local weapon = Cache.Client.fgun
+            local weapon = Cache.Client and Cache.Client.fgun
             if not weapon then return end
-            local weaponData = _FindFirstChild(replicatedStorage.Weapons, weapon.Name)
-            if weaponData and _FindFirstChild(weaponData, "Melee") then return end
+            
+            local weaponData = replicatedStorage and ErrorHandler.SafeFindFirstChild(replicatedStorage, "Weapons", 1)
+            if weaponData then
+                weaponData = ErrorHandler.SafeFindFirstChild(weaponData, weapon.Name, 1)
+                if weaponData and ErrorHandler.SafeFindFirstChild(weaponData, "Melee", 1) then return end
+            end
 
-            local camCF = camera.CFrame
+            if not camera then return end
+            local camCF = ErrorHandler.SafeCall(function() return camera.CFrame end)
+            if not camCF then return end
+            
             local camPos, camLook = camCF.Position, camCF.LookVector
-            local origin = (Flags.RageBot_Origins == "Camera" and camPos)
-                or (Flags.RageBot_Origins == "Head" and char:FindFirstChild("Head") and char.Head.Position)
-                or (char:FindFirstChild("Gun") and char.Gun:FindFirstChild("Flash") and char.Gun.Flash.Position)
+            local origin = ErrorHandler.SafeCall(function()
+                if Flags.RageBot_Origins == "Camera" then
+                    return camPos
+                elseif Flags.RageBot_Origins == "Head" then
+                    local head = ErrorHandler.SafeFindFirstChild(char, "Head", 0.5)
+                    return head and head.Position
+                else
+                    local gun = ErrorHandler.SafeFindFirstChild(char, "Gun", 0.5)
+                    if gun then
+                        local flash = ErrorHandler.SafeFindFirstChild(gun, "Flash", 0.5)
+                        return flash and flash.Position
+                    end
+                end
+            end)
             if not origin then return end
 
             local enemiesFound = false
@@ -6768,12 +6973,15 @@ do --Funcs
                 RageBot.Target.Hit = best.instance
                 RageBot.Target.Origin = best.from
 
-                HitPart:FireServer(
+                ErrorHandler.SafeRemoteCall(HitPart,
                     best.instance,
                     Flags.RageBot_Prediction and {X = 0/0, Y = 0/0, Z = 0/0} or RageBot.Target.CryptedPosition,
                     weapon.Name,
                     0,
-                    _FindFirstChild(LocalPlayer.Character, "Gun"),
+                    ErrorHandler.SafeCall(function()
+                        local char = LocalPlayer.Character
+                        return char and _FindFirstChild(char, "Gun")
+                    end),
                     nil, 1, false, best.wallbang,
                     _Vector3New(), 0, _Vector3New(), true
                 )
@@ -6824,8 +7032,11 @@ do --Funcs
                 return
             end
     
-            local isClimbing = LocalPlayer.Character and _FindFirstChild(LocalPlayer.Character, "Climbing") ~= nil
-            Events.ControlTurn:FireServer(angle, isClimbing)
+            local isClimbing = ErrorHandler.SafeCall(function()
+                local char = LocalPlayer.Character
+                return char and _FindFirstChild(char, "Climbing") ~= nil
+            end) or false
+            ErrorHandler.SafeRemoteCall(Events.ControlTurn, angle, isClimbing)
         end
     
     
@@ -6890,30 +7101,35 @@ do --Funcs
         end
         
         RunService.RenderStepped:Connect(function()
-            if not Flags["AntiAim_Enabled"] then return end
-    
-            local char = LocalPlayer.Character
-            if not Utility.IsPlayerAlive(char) then
-                if char and _FindFirstChild(char, "Humanoid") then
-                    char.Humanoid.AutoRotate = true
+            ErrorHandler.SafeCall(function()
+                if not ErrorHandler.SafeTableAccess(Flags, "AntiAim_Enabled", false) then return end
+        
+                local char = LocalPlayer.Character
+                if not Utility.IsPlayerAlive(char) then
+                    if char then
+                        local humanoid = ErrorHandler.SafeFindFirstChild(char, "Humanoid", 0.5)
+                        if humanoid then
+                            ErrorHandler.SafeCall(function() humanoid.AutoRotate = true end)
+                        end
+                    end
+                    return
                 end
-                return
-            end
-    
-            AntiAim.PitchControl()
-            AntiAim.YawControl()
+        
+                AntiAim.PitchControl()
+                AntiAim.YawControl()
+            end)
         end)
     end
 	    	 
     do --Movement
         function Movement.GetCharacter()
-            local character = LocalPlayer.Character
-            if not character then return nil end
-            local root = _FindFirstChild(character, "HumanoidRootPart")
-            local humanoid = _FindFirstChild(character, "Humanoid")
-            if not Utility.IsPlayerAlive(character) then return nil end
-            if not root or not humanoid then return nil end
-            return character, root, humanoid
+            return ErrorHandler.SafeCall(function()
+                local character, humanoid, rootPart = ErrorHandler.SafeCharacterAccess(LocalPlayer)
+                if not character or not humanoid or not rootPart then
+                    return nil
+                end
+                return character, rootPart, humanoid
+            end)
         end
         
         function Movement.GetYRotation(cframe)
@@ -6922,12 +7138,24 @@ do --Funcs
         end
         	    	 
         function Movement.GetMoveDirection()
-            local dir = Vector3.zero
-            if _IsKeyDown(InputService, Enum.KeyCode.W) then dir += _Vector3New(0, 0, -1) end
-            if _IsKeyDown(InputService, Enum.KeyCode.S) then dir += _Vector3New(0, 0, 1) end
-            if _IsKeyDown(InputService, Enum.KeyCode.A) then dir += _Vector3New(-1, 0, 0) end
-            if _IsKeyDown(InputService, Enum.KeyCode.D) then dir += _Vector3New(1, 0, 0) end
-            return dir.Magnitude > 0 and dir.Unit or nil
+            return ErrorHandler.SafeCall(function()
+                if not InputService then return nil end
+                
+                local dir = Vector3.zero
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.W) then 
+                    dir += _Vector3New(0, 0, -1) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.S) then 
+                    dir += _Vector3New(0, 0, 1) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.A) then 
+                    dir += _Vector3New(-1, 0, 0) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.D) then 
+                    dir += _Vector3New(1, 0, 0) 
+                end
+                return dir.Magnitude > 0 and dir.Unit or nil
+            end)
         end
         
         -- Pulse method variables
@@ -6936,50 +7164,64 @@ do --Funcs
         local pulseActive = false
         
         RunService.Stepped:Connect(function()
-            local character, root, humanoid = Movement.GetCharacter()
-            if not character then return end
-            if not Flags["Movement_SpeedHack"] then return end   
-            if _IsKeyDown(InputService, Enum.KeyCode.Space) then
-                humanoid.Jump = true  
-            end   
-            local moveDir = Movement.GetMoveDirection()
-            if not moveDir then return end
-    
-            local camCF = camera.CFrame
-            local forward = Movement.GetYRotation(camCF):VectorToWorldSpace(moveDir)
-            local Speed = Flags["Movement_OverrideSpeedHack"] and Flags["Movement_OverrideSpeed"] or Flags["Movement_Speed"]
-            
-            if Flags["Movement_SpeedHackMethod"] == "Velocity" then
-                local velocity = forward * Speed
-                root.Velocity = _Vector3New(velocity.X, root.Velocity.Y, velocity.Z)
-            elseif Flags["Movement_SpeedHackMethod"] == "CFrame" then
-                local offset = forward * (Speed / 50)
-                root.CFrame += _Vector3New(offset.X, 0, offset.Z)
-            elseif Flags["Movement_SpeedHackMethod"] == "Pulse" then
-                local currentTime = _Tick()
+            ErrorHandler.SafeCall(function()
+                local character, root, humanoid = Movement.GetCharacter()
+                if not character or not root or not humanoid then return end
+                if not Flags["Movement_SpeedHack"] then return end
                 
-                -- Check if it's time for a pulse
-                if currentTime - pulseTimer >= pulseInterval then
-                    pulseTimer = currentTime
-                    pulseActive = true
-                    
-                    -- Apply a strong velocity pulse
-                    local pulseVelocity = forward * (Speed * 2.5) -- Stronger pulse
-                    root.Velocity = _Vector3New(pulseVelocity.X, root.Velocity.Y, pulseVelocity.Z)
-                    
-                    -- Schedule pulse deactivation
-                    _TaskSpawn(function()
-                        _TaskWait(0.05) -- Pulse duration: 50ms
-                        pulseActive = false
+                -- Safe space key check
+                if InputService and ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.Space) then
+                    ErrorHandler.SafeCall(function() humanoid.Jump = true end)
+                end
+                
+                local moveDir = Movement.GetMoveDirection()
+                if not moveDir then return end
+                
+                if not camera then return end
+                local camCF = ErrorHandler.SafeCall(function() return camera.CFrame end)
+                if not camCF then return end
+                
+                local forward = Movement.GetYRotation(camCF):VectorToWorldSpace(moveDir)
+                local Speed = Flags["Movement_OverrideSpeedHack"] and Flags["Movement_OverrideSpeed"] or Flags["Movement_Speed"]
+                
+                if Flags["Movement_SpeedHackMethod"] == "Velocity" then
+                    ErrorHandler.SafeCall(function()
+                        local velocity = forward * Speed
+                        root.Velocity = _Vector3New(velocity.X, root.Velocity.Y, velocity.Z)
+                    end)
+                elseif Flags["Movement_SpeedHackMethod"] == "CFrame" then
+                    ErrorHandler.SafeCall(function()
+                        local offset = forward * (Speed / 50)
+                        root.CFrame += _Vector3New(offset.X, 0, offset.Z)
+                    end)
+                elseif Flags["Movement_SpeedHackMethod"] == "Pulse" then
+                    ErrorHandler.SafeCall(function()
+                        local currentTime = _Tick()
+                        
+                        -- Check if it's time for a pulse
+                        if currentTime - pulseTimer >= pulseInterval then
+                            pulseTimer = currentTime
+                            pulseActive = true
+                            
+                            -- Apply a strong velocity pulse
+                            local pulseVelocity = forward * (Speed * 2.5) -- Stronger pulse
+                            root.Velocity = _Vector3New(pulseVelocity.X, root.Velocity.Y, pulseVelocity.Z)
+                            
+                            -- Schedule pulse deactivation
+                            _TaskSpawn(function()
+                                _TaskWait(0.05) -- Pulse duration: 50ms
+                                pulseActive = false
+                            end)
+                        end
+                        
+                        -- Apply slight continuous movement between pulses for smoothness
+                        if not pulseActive then
+                            local baseVelocity = forward * (Speed * 0.3) -- Reduced base speed
+                            root.Velocity = _Vector3New(baseVelocity.X, root.Velocity.Y, baseVelocity.Z)
+                        end
                     end)
                 end
-                
-                -- Apply slight continuous movement between pulses for smoothness
-                if not pulseActive then
-                    local baseVelocity = forward * (Speed * 0.3) -- Reduced base speed
-                    root.Velocity = _Vector3New(baseVelocity.X, root.Velocity.Y, baseVelocity.Z)
-                end
-            end
+            end)
         end)
     end
     Esp.chamsFolder = _Instancenew("Folder", CoreGui)
@@ -8018,10 +8260,16 @@ do --Funcs
     do --Visuals
         do --Camera
             RunService.RenderStepped:Connect(function()
-                if not Utility.IsPlayerAlive(LocalPlayer.Character) then return end
-                if Crosshairs.Scope.Visible ~= true then
-                    camera.FieldOfView = Flags["Camera_FieldOfView"]
-                end
+                ErrorHandler.SafeCall(function()
+                    if not Utility.IsPlayerAlive(LocalPlayer.Character) then return end
+                    if not Crosshairs or not camera then return end
+                    
+                    local scope = ErrorHandler.SafeFindFirstChild(Crosshairs, "Scope", 0.1)
+                    if not scope or scope.Visible ~= true then
+                        local fov = ErrorHandler.SafeTableAccess(Flags, "Camera_FieldOfView", 70)
+                        ErrorHandler.SafeSetProperty(camera, "FieldOfView", fov)
+                    end
+                end)
             end)
         end
         Visuals.defaultlighting = { -- fuck it
