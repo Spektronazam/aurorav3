@@ -5240,557 +5240,443 @@ local Window = Library:CreateWindow({
     MenuFadeTime = 0
 })
 
--- Legit module runtime: selects a target and performs smooth/humanized aiming when enabled
+-- Legit module: Human-like aim assistance with realistic behavior patterns
 do
-    local function vecLerp(a, b, t)
-        return _Vector3New(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, a.Z + (b.Z - a.Z) * t)
+    -- Humanization variables
+    local lastTargetSwitch = 0
+    local currentTarget = nil
+    local aimStartTime = 0
+    local lastReactionTime = 0
+    local overshootActive = false
+    local overshootTarget = nil
+    local microCorrectionTime = 0
+    local shakinessSeed = _MathRandom() * 1000
+    local visibilityCache = {}
+    local lastVisibilityCheck = 0
+    local aimStyleSeed = _MathRandom() * 1000
+    local currentAimPattern = nil
+    local patternStartTime = 0
+    
+    -- Bezier curve function for smooth human-like movement
+    local function bezierCurve(t, p0, p1, p2, p3)
+        local u = 1 - t
+        local tt = t * t
+        local uu = u * u
+        local uuu = uu * u
+        local ttt = tt * t
+        
+        return uuu * p0 + 3 * uu * t * p1 + 3 * u * tt * p2 + ttt * p3
     end
-
-    -- On-screen legit target indicator (uses Drawing if available) and FOV circle
-    local targetText, fovCircle, targetInfoText, EnsureScreenGui
-    local sg_ui -- ScreenGui fallback
+    
+    -- Generate human-like reaction time
+    local function getReactionTime()
+        local minTime = (Flags.Legit_ReactionMin or 120) / 1000
+        local maxTime = (Flags.Legit_ReactionMax or 200) / 1000
+        return minTime + _MathRandom() * (maxTime - minTime)
+    end
+    
+    -- Add hand shakiness to aim
+    local function addShakiness(vector, intensity)
+        if not Flags.Legit_HumanMovement or intensity <= 0 then return vector end
+        
+        local time = _Tick() * 10 + shakinessSeed
+        local shakeX = _MathSin(time * 1.7) * intensity * 0.001
+        local shakeY = _MathCos(time * 2.3) * intensity * 0.001
+        local shakeZ = _MathSin(time * 1.1) * intensity * 0.0005
+        
+        return vector + _Vector3New(shakeX, shakeY, shakeZ)
+    end
+    
+    -- Advanced visibility check with caching
+    local function isTargetVisible(player, targetPos)
+        if not Flags.Legit_VisibilityCheck then return true end
+        
+        local now = _Tick()
+        local cacheKey = tostring(player) .. "_" .. tostring(targetPos)
+        
+        -- Use cached result if recent (60ms cache)
+        if visibilityCache[cacheKey] and now - visibilityCache[cacheKey].time < 0.06 then
+            return visibilityCache[cacheKey].visible
+        end
+        
+        local char = LocalPlayer.Character
+        if not char then return false end
+        
+        local camPos = camera.CFrame.Position
+        local direction = targetPos - camPos
+        
+        local success, result = pcall(function()
+            local raycastParams = _RaycastParamsNew()
+            raycastParams.FilterDescendantsInstances = {
+                camera, 
+                workspace.Ray_Ignore, 
+                workspace.Debris, 
+                char,
+                player.Character
+            }
+            raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+            raycastParams.IgnoreWater = true
+            
+            local hit = workspaceRaycast(workspace, camPos, direction, raycastParams)
+            return not hit or hit.Instance:IsDescendantOf(player.Character)
+        end)
+        
+        local visible = success and result
+        visibilityCache[cacheKey] = {visible = visible, time = now}
+        
+        return visible
+    end
+    
+    -- Generate randomized aiming patterns based on style
+    local function getAimPattern(style, targetDistance)
+        local patterns = {
+            Conservative = {
+                speed = {0.3, 0.6},
+                smoothness = {15, 25},
+                overshoot = {5, 15},
+                corrections = {2, 4}
+            },
+            Balanced = {
+                speed = {0.5, 0.8},
+                smoothness = {8, 18},
+                overshoot = {10, 25},
+                corrections = {3, 6}
+            },
+            Aggressive = {
+                speed = {0.7, 1.2},
+                smoothness = {4, 12},
+                overshoot = {15, 35},
+                corrections = {4, 8}
+            }
+        }
+        
+        local pattern = patterns[style] or patterns.Balanced
+        local distanceFactor = _MathClamp(targetDistance / 200, 0.5, 2)
+        
+        return {
+            speed = pattern.speed[1] + _MathRandom() * (pattern.speed[2] - pattern.speed[1]),
+            smoothness = pattern.smoothness[1] + _MathRandom() * (pattern.smoothness[2] - pattern.smoothness[1]),
+            overshoot = (pattern.overshoot[1] + _MathRandom() * (pattern.overshoot[2] - pattern.overshoot[1])) / distanceFactor,
+            corrections = _MathFloor(pattern.corrections[1] + _MathRandom() * (pattern.corrections[2] - pattern.corrections[1]))
+        }
+    end
+    
+    -- Human-like aiming with randomized patterns
+    local function applyHumanAiming(currentLook, targetDirection, pixelDistance)
+        local now = _Tick()
+        local aimStyle = Options and Options.Legit_AimStyle and Options.Legit_AimStyle.Value or "Balanced"
+        
+        -- Generate new pattern if needed
+        if not currentAimPattern or now - patternStartTime > 2 + _MathRandom() * 3 then
+            currentAimPattern = getAimPattern(aimStyle, pixelDistance or 100)
+            patternStartTime = now
+        end
+        
+        local pattern = currentAimPattern
+        local baseSpeed = pattern.speed * ((Flags.Legit_Strength or 65) / 100)
+        
+        -- Distance-based speed adjustment
+        local distanceMultiplier = 1
+        if pixelDistance then
+            if pixelDistance > 150 then
+                distanceMultiplier = 1.3 + _MathRandom() * 0.4  -- Faster for distant targets
+            elseif pixelDistance < 30 then
+                distanceMultiplier = 0.4 + _MathRandom() * 0.3  -- Slower for close targets
+            else
+                distanceMultiplier = 0.7 + _MathRandom() * 0.6  -- Variable for medium distance
+            end
+        end
+        
+        local finalSpeed = baseSpeed * distanceMultiplier
+        local smoothness = pattern.smoothness * (1 + _MathRandom() * 0.3)
+        
+        -- Apply smoothing with randomization
+        local aimFactor = _MathClamp(finalSpeed / smoothness, 0.01, 1)
+        
+        -- Add human-like curve variations
+        local curveVariation = _MathSin(now * 2 + aimStyleSeed) * 0.1
+        aimFactor = aimFactor * (1 + curveVariation)
+        
+        return currentLook:Lerp(targetDirection, aimFactor).Unit
+    end
+    
+    -- FOV circle drawing
+    local fovCircle
     do
         local ok, DrawingLib = pcall(function() return Drawing end)
         if ok and DrawingLib then
-            local success, err = pcall(function()
-                targetText = Drawing.new('Text')
-                targetText.Visible = false
-                targetText.Size = 16
-                targetText.Color = _Color3FromRGB(255, 255, 255)
-                targetText.Center = true
-                targetText.Outline = true
-                if Drawing.Fonts and Drawing.Fonts.Plex then
-                    targetText.Font = Drawing.Fonts.Plex
-                end
-
-                -- small secondary text for priority/hitchance
-                targetInfoText = Drawing.new('Text')
-                targetInfoText.Visible = false
-                targetInfoText.Size = 14
-                targetInfoText.Color = _Color3FromRGB(200, 200, 200)
-                targetInfoText.Center = true
-                targetInfoText.Outline = true
-                if Drawing.Fonts and Drawing.Fonts.Plex then
-                    targetInfoText.Font = Drawing.Fonts.Plex
-                end
-
+            local success = pcall(function()
                 fovCircle = Drawing.new('Circle')
                 fovCircle.Visible = false
                 fovCircle.Color = _Color3FromRGB(255, 255, 255)
-                fovCircle.Thickness = 1
+                fovCircle.Thickness = 2
                 fovCircle.NumSides = 64
-                fovCircle.Transparency = 0
+                fovCircle.Transparency = 0.3
             end)
             if not success then
-                targetText = nil
-                targetInfoText = nil
                 fovCircle = nil
             end
         end
-
-        -- ScreenGui fallback creation helper
-        EnsureScreenGui = function()
-            if sg_ui and sg_ui.Parent then return sg_ui end
-            if not LocalPlayer or not LocalPlayer:FindFirstChild("PlayerGui") then return nil end
-            local existing = LocalPlayer.PlayerGui:FindFirstChild("LegitHUD")
-            if existing then sg_ui = existing return sg_ui end
-            local screen = _Instancenew("ScreenGui")
-            screen.Name = "LegitHUD"
-            screen.ResetOnSpawn = false
-            local label = _Instancenew("TextLabel")
-            label.Name = "LegitTargetText"
-            label.Size = _UDim2New(0, 250, 0, 28)
-            label.Position = _UDim2New(0.5, -125, 0.45, -14)
-            label.BackgroundTransparency = 1
-            label.TextColor3 = _Color3FromRGB(255,255,255)
-            label.TextStrokeTransparency = 0.7
-            label.TextScaled = false
-            label.Font = Enum.Font.SourceSansBold
-            label.Text = ""
-            label.Parent = screen
-            local info = _Instancenew("TextLabel")
-            info.Name = "LegitTargetInfo"
-            info.Size = _UDim2New(0, 300, 0, 20)
-            info.Position = _UDim2New(0.5, -150, 0.45, 16)
-            info.BackgroundTransparency = 1
-            info.TextColor3 = _Color3FromRGB(200,200,200)
-            info.TextStrokeTransparency = 0.7
-            info.TextScaled = false
-            info.Font = Enum.Font.SourceSans
-            info.Text = ""
-            info.Parent = screen
-            screen.Parent = LocalPlayer.PlayerGui
-            sg_ui = screen
-            return sg_ui
-        end
     end
-
-        -- per-module last shoot timestamp for autofire throttling and pending fire state
-    Legit._lastShoot = 0
-        Legit._pendingFire = nil
-        Legit._lastTrigger = 0
-
+    
+    -- Initialize legit module state
+    Legit._lastTrigger = 0
+    Legit._pendingTrigger = nil
+    
     RunService.RenderStepped:Connect(function()
-        -- record historical positions for backtrack per player
-        if Flags.Legit_Backtrack then
-            local nowt = _Tick()
-            for _, pdata in next, PlayerModule.storage do
-                if pdata and pdata.character and pdata.alive and pdata.enemy and pdata.player then
-                    pdata._backtrack = pdata._backtrack or {}
-                    local boneName = (Flags.Legit_TargetBone == 1 and "Head") or (Flags.Legit_TargetBone == 2 and "Chest") or (Flags.Legit_TargetBone == 3 and "Pelvis") or "Head"
-                    local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
-                    local part = pdata.character:FindFirstChild(partName)
-                    if part then
-                        pdata._backtrack[#pdata._backtrack + 1] = {pos = part.Position, t = nowt}
-                        -- trim old
-                        local cutoff = nowt - ((Flags.Legit_Backtrack_Time or 200) / 1000)
-                        while pdata._backtrack[1] and pdata._backtrack[1].t < cutoff do
-                            table.remove(pdata._backtrack, 1)
-                        end
-                    end
-                end
-            end
-        end
         local char = LocalPlayer.Character
         if not Utility.IsPlayerAlive(char) then
-            if targetText then targetText.Visible = false end
             if fovCircle then fovCircle.Visible = false end
             Legit.Target.TargetPosition = nil
             Legit.Target.TargetPlayer = nil
+            currentTarget = nil
             return
         end
-
-        -- Activation mode handling: Always / Toggle / Hold
-        local mode = Flags.Legit_Mode or "Toggle"
-        local active = false
-        if mode == "Always" then
-            active = true
-        elseif mode == "Toggle" then
-            active = Flags.Legit_Enabled
-        elseif mode == "Hold" then
-            local keyOpt = Options and Options["LegitKeyBind"]
-            active = keyOpt and keyOpt:GetState()
-        end
-
+        
+        -- Check if legit aim is active
+        local keyOpt = Options and Options["LegitKeyBind"]
+        local active = Flags.Legit_Enabled and keyOpt and keyOpt:GetState()
+        
         if not active then
-            if targetText then targetText.Visible = false end
             if fovCircle then fovCircle.Visible = false end
             Legit.Target.TargetPosition = nil
             Legit.Target.TargetPlayer = nil
+            currentTarget = nil
             return
         end
-
-        -- if aim assist is off but silent aim is on, still expose target for other systems
-        if not Flags.Legit_AimAssist and not Flags.Legit_SilentAim then
-            Legit.Target.TargetPosition = nil
-            Legit.Target.TargetPlayer = nil
-            return
-        end
-
+        
         local camCF = camera.CFrame
         local camPos, camLook = camCF.Position, camCF.LookVector
-        local useFov, maxFov = (Flags.Legit_FOV ~= 180), (Flags.Legit_FOV or 180)
+        local fov = Flags.Legit_FOV or 45
+        local maxDistance = Flags.Legit_MaxDistance or 300
         local mX, mY = Mouse.X, Mouse.Y
-
-    local bestScore, bestPos, bestPlayer, bestPixelDist, bestWorldDist = math.huge, nil, nil, nil, nil
-
-    for _, pdata in next, PlayerModule.storage do
-            if not (pdata.alive and pdata.enemy) or pdata.protected or pdata.god or not pdata.character then continue end
-
-            local boneName = (Flags.Legit_TargetBone == 1 and "Head") or (Flags.Legit_TargetBone == 2 and "Chest") or (Flags.Legit_TargetBone == 3 and "Pelvis") or "Head"
-            local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
-            local part = pdata.character:FindFirstChild(partName)
-            if not part then continue end
-
-            local pos = part.Position
-            if Flags.Legit_Predict and pdata.velocity then
-                pos = pos + (pdata.velocity * 0.06)
-            end
-
-            local dir = pos - camPos
-            if dir.Magnitude <= 0 then continue end
-            local ang = _MathDeg(math.acos(_MathClamp(camLook:Dot(dir.Unit), -1, 1))) * 2
-            if useFov and ang >= maxFov then continue end
-
-            local screenPos, onScreen = Calculations:worldToViewportPoint(pos, false, 0)
-            if not screenPos or not onScreen then continue end
-            local dx, dy = screenPos.X - mX, screenPos.Y - mY
-            local pixelDist = math.sqrt(dx*dx + dy*dy)
-
-            -- prepare multipoint candidates for this player (if enabled)
-            local candidatePos = pos
-            if Flags.Legit_Multipoint then
-                local mul = Flags.Legit_Multipoint_Quality or 3
-                local radius = Flags.Legit_Multipoint_Radius or 0.08
-                -- build few offsets around the bone position
-                local pts = {pos}
-                for i=1, mul do
-                    local ang = (i / mul) * math.pi * 2
-                    local off = _Vector3New(math.cos(ang)*radius, math.sin(ang)*radius, 0)
-                    pts[#pts+1] = pos + off
-                end
-                -- pick the best visible multipoint if any
-                for _, ppos in ipairs(pts) do
-                    local ok, sc = pcall(function() return Calculations:worldToViewportPoint(ppos, false, 0) end)
-                    if ok and sc and sc.X then
-                        candidatePos = ppos
-                        break
-                    end
-                end
-            end
-
-            -- scoring by selected priority
-            local priority = Options and Options.Legit_TargetPriority and Options.Legit_TargetPriority.Value or Flags.Legit_TargetPriority or "Crosshair"
-            local score = 0
-            if priority == "Crosshair" then
-                score = pixelDist
-            elseif priority == "Distance" then
-                score = dir.Magnitude
-            elseif priority == "Lowest Health" then
-                local humanoid = pdata.character and pdata.character:FindFirstChildOfClass("Humanoid")
-                local hp = humanoid and humanoid.Health or 100
-                score = hp + (dir.Magnitude * 0.01)
-            elseif priority == "Visible" then
-                -- prefer visible targets (cheap raycast)
-                local visibleScore = 999999
-                local ok, hit = pcall(function()
-                    local param = _RaycastParamsNew()
-                    param.FilterDescendantsInstances = {camera, workspace.Ray_Ignore, workspace.Debris, char, pdata.character}
-                    param.FilterType = Enum.RaycastFilterType.Blacklist
-                    param.IgnoreWater = true
-                    return workspaceRaycast(workspace, camPos, dir, param)
-                end)
-                if ok and hit and hit.Instance and hit.Instance:IsDescendantOf(pdata.character) then
-                    visibleScore = pixelDist * 0.1
-                else
-                    visibleScore = pixelDist + 10000
-                end
-                score = visibleScore
-            else
-                score = pixelDist
-            end
-
-            if score < bestScore then
-                bestScore = score
-                bestPos = candidatePos or pos
-                bestPlayer = pdata.player
-                bestPixelDist = pixelDist
-                bestWorldDist = dir.Magnitude
-            end
-        end
-
-        if not bestPos then
-            Legit.Target.TargetPosition = nil
-            Legit.Target.TargetPlayer = nil
-            if targetText then targetText.Visible = false end
-            return
-        end
-
-        -- Aim-lock handling (Sticky): briefly lock to the last selected target to reduce flicker
-        local aimLockMode = Flags.Legit_AimLockMode or "Off"
-        if aimLockMode == "Sticky" then
-            if Legit._lockedTarget and Legit._lockedUntil and _Tick() < Legit._lockedUntil and Legit._lockedTarget == bestPlayer then
-                -- refresh lock duration
-                Legit._lockedUntil = _Tick() + 0.6
-            else
-                Legit._lockedTarget = bestPlayer
-                Legit._lockedPos = bestPos
-                Legit._lockedUntil = _Tick() + 0.6
-            end
-            if Legit._lockedTarget and Legit._lockedPos then
-                bestPlayer = Legit._lockedTarget
-                bestPos = Legit._lockedPos
-            end
-        end
-
-        Legit.Target.TargetPosition = bestPos
-        Legit.Target.TargetPlayer = bestPlayer
-
-        -- compute a more robust hitchance estimate so other systems can use it
-        do
-            local bestPdata
-            for _, pd in next, PlayerModule.storage do
-                if pd.player == bestPlayer then bestPdata = pd break end
-            end
-
-            local smooth = Flags.Legit_Smooth or 6
-            local jitter = Flags.Legit_Aim_Jitter or 0
-            local base = _MathClamp(100 - (smooth * 1.5 + jitter * 8), 5, 100)
-
-            local velPenalty = 0
-            if bestPdata and bestPdata.velocity then
-                velPenalty = _MathClamp(bestPdata.velocity.Magnitude * 1.2, 0, 40)
-            end
-
-            local distPenalty = 0
-            if bestWorldDist then
-                distPenalty = _MathClamp(bestWorldDist * 0.08, 0, 30)
-            end
-
-            local spreadPenalty = 0
-            local weapon = (Cache and Cache.Client) and Cache.Client.fgun or nil
-            if weapon and _Typeof(weapon) == "Instance" then
-                local sp = _FindFirstChild(weapon, "Spread") or _FindFirstChild(weapon, "SpreadValue") or _FindFirstChild(weapon, "SpreadAngle")
-                if sp and _IsA(sp, "NumberValue") then
-                    spreadPenalty = _MathClamp(sp.Value * 10, 0, 30)
-                end
-            end
-
-            local hitch = _MathFloor(_MathClamp(base - velPenalty - distPenalty - spreadPenalty, 1, 100))
-            Legit.Target.Hitchance = hitch
-            Legit.Target.Priority = Options and Options.Legit_TargetPriority and Options.Legit_TargetPriority.Value or Flags.Legit_TargetPriority or "Crosshair"
-        end
-
-        -- Update on-screen indicator
-        if targetText then
-            local screenPos, onScreen = Calculations:worldToViewportPoint(bestPos, false, 0)
-            if screenPos and onScreen then
-                targetText.Position = _Vector2New(screenPos.X, screenPos.Y)
-                local dist = math.floor((bestPos - camera.CFrame.Position).Magnitude)
-                local nameLabel = (Flags.Legit_ShowTargetName and (bestPlayer and bestPlayer.Name or "Target")) or "Target"
-                targetText.Text = nameLabel .. " (" .. dist .. "m)"
-                targetText.Visible = true
-                if targetInfoText then
-                    if Flags.Legit_ShowTargetInfo then
-                        local hitchance = Legit.Target.Hitchance or 0
-                        local priority = Legit.Target.Priority or (Options and Options.Legit_TargetPriority and Options.Legit_TargetPriority.Value or Flags.Legit_TargetPriority or "Crosshair")
-                        -- color-code hitchance: green/yellow/red
-                        local hcColor = _Color3FromRGB(200,200,200)
-                        if hitchance >= 70 then
-                            hcColor = _Color3FromRGB(120, 255, 120)
-                        elseif hitchance >= 30 then
-                            hcColor = _Color3FromRGB(255, 220, 120)
-                        else
-                            hcColor = _Color3FromRGB(255, 120, 120)
-                        end
-                        targetInfoText.Position = _Vector2New(screenPos.X, screenPos.Y + 18)
-                        targetInfoText.Text = ("Priority: %s | Hitchance: %d%%"):format(priority, hitchance)
-                        targetInfoText.Color = hcColor
-                        targetInfoText.Visible = true
-                    else
-                        targetInfoText.Visible = false
-                    end
-                end
-            else
-                targetText.Visible = false
-                if targetInfoText then targetInfoText.Visible = false end
-            end
-        end
-
-        -- ScreenGui fallback update (if Drawing missing and user requested)
-        if (not targetText) and Flags.Legit_UseScreenGuiFallback then
-            local sg = EnsureScreenGui()
-            if sg then
-                local lbl = sg:FindFirstChild("LegitTargetText")
-                local info = sg:FindFirstChild("LegitTargetInfo")
-                if lbl and info then
-                    local screenPos, onScreen = Calculations:worldToViewportPoint(bestPos, false, 0)
-                    if screenPos and onScreen and Flags.Legit_ShowTargetInfo then
-                        local nameLabel = (Flags.Legit_ShowTargetName and (bestPlayer and bestPlayer.Name or "Target")) or "Target"
-                        lbl.Text = nameLabel .. " (" .. math.floor((bestPos - camera.CFrame.Position).Magnitude) .. "m)"
-                        info.Text = ("Priority: %s | Hitchance: %d%%"):format(Legit.Target.Priority or "-", Legit.Target.Hitchance or 0)
-                        lbl.Visible = true
-                        info.Visible = true
-                    else
-                        if lbl then lbl.Visible = false end
-                        if info then info.Visible = false end
-                    end
-                end
-            end
-        end
-
-        -- Update FOV circle (centered on camera forward or mouse) if enabled
-        if fovCircle then
-            if Flags.Legit_ShowFOV then
-                local mouseCentered = Flags.Legit_MouseFOV
-                local centerX, centerY
-                if mouseCentered then
-                    centerX, centerY = Mouse.X, Mouse.Y
-                else
-                    local forwardPoint = camPos + camLook * 1000
-                        local fwdScreen, fwdOn = Calculations:worldToViewportPoint(forwardPoint, false, 0)
-                        if fwdScreen and fwdOn then
-                            centerX, centerY = fwdScreen.X, fwdScreen.Y
-                        else
-                            -- fallback to viewport center
-                            centerX, centerY = viewportSize.X * 0.5, viewportSize.Y * 0.5
-                        end
-                end
-
-                local yaw = math.rad((Flags.Legit_FOV or 8) / 2)
-                local rotCF = camCF * _CFrameAngles(0, yaw, 0)
-                local rotPoint = rotCF.Position + rotCF.LookVector * 1000
-                local rotScreen, rotOn = Calculations:worldToViewportPoint(rotPoint, false, 0)
-                if not rotScreen or not rotOn then
-                    fovCircle.Visible = false
-                else
-                    local dx, dy = rotScreen.X - centerX, rotScreen.Y - centerY
-                    local radius = math.sqrt(dx*dx + dy*dy)
-                    fovCircle.Position = _Vector2New(centerX, centerY)
-                    fovCircle.Radius = radius
-                    fovCircle.Color = Flags.Legit_FOV_Color or _Color3FromRGB(255,255,255)
-                    fovCircle.Thickness = Flags.Legit_FOV_Thickness or 1
-                    fovCircle.Transparency = 1 - (Flags.Legit_FOV_Opacity or 1)
-                    fovCircle.Visible = true
-                end
-                
+        
+        -- Update FOV circle
+        if fovCircle and Flags.Legit_ShowFOV then
+            local centerX, centerY = viewportSize.X * 0.5, viewportSize.Y * 0.5
+            local yaw = math.rad(fov / 2)
+            local rotCF = camCF * _CFrameAngles(0, yaw, 0)
+            local rotPoint = rotCF.Position + rotCF.LookVector * 100
+            local rotScreen, rotOn = Calculations:worldToViewportPoint(rotPoint, false, 0)
+            
+            if rotScreen and rotOn then
+                local dx, dy = rotScreen.X - centerX, rotScreen.Y - centerY
+                local radius = math.sqrt(dx*dx + dy*dy)
+                fovCircle.Position = _Vector2New(centerX, centerY)
+                fovCircle.Radius = radius
+                fovCircle.Color = Flags.Legit_FOV_Color or _Color3FromRGB(255,255,255)
+                fovCircle.Visible = true
             else
                 fovCircle.Visible = false
             end
+        elseif fovCircle then
+            fovCircle.Visible = false
         end
-
-        -- Triggerbot: quick-fire when crosshair over target according to trigger mode and requirements
-        if Flags.Legit_Triggerbot then
-            local trigMode = Options and Options.Legit_Triggerbot_Mode and Options.Legit_Triggerbot_Mode.Value or Flags.Legit_Triggerbot_Mode or "Hold"
-            local trigActive = false
-            if trigMode == "Always" then trigActive = true
-            elseif trigMode == "Toggle" then trigActive = Flags.Legit_Triggerbot
-            elseif trigMode == "Hold" then
-                local keyOpt = Options and Options["LegitKeyBind"]
-                trigActive = keyOpt and keyOpt:GetState()
+        
+        -- Find best target with visibility check
+        local bestScore, bestPos, bestPlayer, bestPixelDist = math.huge, nil, nil, nil
+        local visibleTargets = {}
+        
+        for _, pdata in next, PlayerModule.storage do
+            if not (pdata.alive and pdata.enemy) or pdata.protected or pdata.god or not pdata.character then continue end
+            
+            local boneName = (Flags.Legit_TargetBone == 1 and "Head") or "Chest"
+            local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
+            local part = pdata.character:FindFirstChild(partName)
+            if not part then continue end
+            
+            local pos = part.Position
+            local dir = pos - camPos
+            local distance = dir.Magnitude
+            
+            -- Distance check
+            if distance > maxDistance then continue end
+            
+            -- FOV check
+            local ang = _MathDeg(math.acos(_MathClamp(camLook:Dot(dir.Unit), -1, 1)))
+            if ang > fov / 2 then continue end
+            
+            local screenPos, onScreen = Calculations:worldToViewportPoint(pos, false, 0)
+            if not screenPos or not onScreen then continue end
+            
+            local dx, dy = screenPos.X - mX, screenPos.Y - mY
+            local pixelDist = math.sqrt(dx*dx + dy*dy)
+            
+            -- Advanced visibility check
+            local isVisible = isTargetVisible(pdata.player, pos)
+            
+            -- Scoring based on priority with visibility bonus
+            local priority = Options and Options.Legit_TargetPriority and Options.Legit_TargetPriority.Value or "Crosshair Distance"
+            local score = 0
+            
+            if priority == "Crosshair Distance" then
+                score = pixelDist
+            elseif priority == "World Distance" then
+                score = distance
+            else
+                score = pixelDist
             end
-
-            if trigActive and bestPlayer and bestPixelDist and bestPixelDist <= (Flags.Legit_Triggerbot_Threshold or 20) then
-                if Flags.Legit_Triggerbot_RequireMB1 then
-                    local mb1 = InputService and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-                    if not mb1 then trigActive = false end
+            
+            -- Heavily prioritize visible targets
+            if Flags.Legit_VisibilityCheck then
+                if isVisible then
+                    score = score * 0.1  -- Make visible targets much more attractive
+                    visibleTargets[#visibleTargets + 1] = {
+                        player = pdata.player,
+                        pos = pos,
+                        pixelDist = pixelDist,
+                        score = score
+                    }
+                else
+                    score = score * 3  -- Deprioritize non-visible targets
                 end
             end
-
-            if trigActive then
-                local nowt = _Tick()
-                Legit._lastTrigger = Legit._lastTrigger or 0
-                local weapon = (Cache and Cache.Client) and Cache.Client.fgun or nil
-                local fireRate = (weapon and weapon.FireRate and weapon.FireRate.Value) or 0.1
-                if nowt - Legit._lastTrigger >= fireRate then
-                    local params = {}
-                    local boneName = (Flags.Legit_TargetBone == 1 and "Head") or (Flags.Legit_TargetBone == 2 and "Chest") or (Flags.Legit_TargetBone == 3 and "Pelvis") or "Head"
-                    local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
-                    local part = bestPlayer and bestPlayer.Character and bestPlayer.Character:FindFirstChild(partName)
-                    if part then
-                        params[#params+1] = {Hit = part, Enter = part.Position, Normal = _Vector3New()}
-                        local hitchOK = (Legit.Target and Legit.Target.Hitchance or 0) >= (Flags.Legit_MinHitchance or 0)
-                        if hitchOK then
-                            pcall(function() Utility.FakeShoot(params) end)
-                            Legit._lastTrigger = nowt
-                        end
-                    end
-                end
+            
+            if score < bestScore then
+                bestScore = score
+                bestPos = pos
+                bestPlayer = pdata.player
+                bestPixelDist = pixelDist
             end
         end
-
-        -- Silent aim: expose target but don't move camera
-        if Flags.Legit_SilentAim then
+        
+        -- If visibility check is enabled and we have visible targets, prefer them
+        if Flags.Legit_VisibilityCheck and #visibleTargets > 0 then
+            -- Sort visible targets by score and add some randomization
+            table.sort(visibleTargets, function(a, b) return a.score < b.score end)
+            
+            -- Sometimes pick a slightly suboptimal target for human-like behavior
+            local targetIndex = 1
+            if #visibleTargets > 1 and _MathRandom() < 0.3 then
+                targetIndex = _MathMin(2, #visibleTargets)
+            end
+            
+            local selectedTarget = visibleTargets[targetIndex]
+            bestPlayer = selectedTarget.player
+            bestPos = selectedTarget.pos
+            bestPixelDist = selectedTarget.pixelDist
+        end
+        
+        -- Handle target switching with reaction time
+        if bestPlayer ~= currentTarget then
+            if Flags.Legit_ReactionTime then
+                local now = _Tick()
+                if now - lastTargetSwitch > getReactionTime() then
+                    currentTarget = bestPlayer
+                    lastTargetSwitch = now
+                    aimStartTime = now
+                end
+            else
+                currentTarget = bestPlayer
+                aimStartTime = _Tick()
+            end
+        end
+        
+        if not bestPos or currentTarget ~= bestPlayer then
+            Legit.Target.TargetPosition = nil
+            Legit.Target.TargetPlayer = nil
             return
         end
-
+        
+        Legit.Target.TargetPosition = bestPos
+        Legit.Target.TargetPlayer = bestPlayer
+        
+        -- Advanced aim assistance with randomized patterns
         if Flags.Legit_AimAssist then
-            local smooth = Flags.Legit_Smooth or 6
-            -- adaptive smoothing: reduce smoothing when target is very close to crosshair for snappier corrections
-            if Flags.Legit_AdaptiveSmoothing and bestPixelDist then
-                local factor = _MathClamp(bestPixelDist / 60, 0.25, 1)
-                smooth = _MathMax(1, smooth * factor)
-            end
-            local tbase = _MathClamp(1 / (_MathMax(smooth, 1)), 0, 1)
-            -- apply aim strength (0-100) scaling: higher strength -> faster correction
-            local aimStrength = _MathClamp((Flags.Legit_AimStrength or 100) / 100, 0.01, 2)
-            tbase = _MathClamp(tbase * aimStrength, 0, 1)
-            local smoothMode = Options and Options.Legit_SmoothMode and Options.Legit_SmoothMode.Value or Flags.Legit_SmoothMode or "Linear"
             local desired = (bestPos - camPos).Unit
-            local t = tbase
-            if smoothMode == "EaseIn" then
-                t = tbase * tbase
-            elseif smoothMode == "EaseOut" then
-                t = 1 - (1 - tbase) * (1 - tbase)
-            elseif smoothMode == "SmoothDamp" then
-                t = tbase * 0.6
+            
+            -- Add overshoot behavior
+            if Flags.Legit_HumanMovement and _MathRandom() * 100 < (Flags.Legit_Overshoot or 15) and not overshootActive then
+                overshootActive = true
+                overshootTarget = desired + (desired - camLook) * (0.05 + _MathRandom() * 0.1)
+                _TaskSpawn(function()
+                    _TaskWait(0.05 + _MathRandom() * 0.15)
+                    overshootActive = false
+                end)
             end
-            local newDir = vecLerp(camLook, desired, t).Unit
+            
+            local targetDir = overshootActive and overshootTarget or desired
+            
+            -- Apply advanced human-like aiming
+            if Flags.Legit_HumanMovement then
+                local newDir = applyHumanAiming(camLook, targetDir, bestPixelDist)
+                newDir = addShakiness(newDir, Flags.Legit_Shakiness or 2)
+                
+                -- Add bezier curve smoothing for extra realism
+                local t = _MathClamp((Flags.Legit_Strength or 65) / 200, 0.01, 0.5)
+                local p0 = camLook
+                local p3 = newDir
+                local p1 = p0 + (p3 - p0) * (0.2 + _MathRandom() * 0.2)
+                local p2 = p0 + (p3 - p0) * (0.6 + _MathRandom() * 0.2)
+                
+                local finalDir = bezierCurve(t, p0, p1, p2, p3).Unit
+                local newCF = _CFrameNew(camPos, camPos + finalDir)
+                camera.CFrame = newCF
+            else
+                -- Simple mode with basic humanization
+                local smooth = Flags.Legit_Smooth or 12
+                local strength = (Flags.Legit_Strength or 65) / 100
+                local aimFactor = _MathClamp(1 / smooth, 0.01, 1) * strength
+                
+                local newDir = camLook:Lerp(targetDir, aimFactor).Unit
+                local newCF = _CFrameNew(camPos, camPos + newDir)
+                camera.CFrame = newCF
+            end
+        end
+        
+        -- Flick assistance for quick target acquisition
+        if Flags.Legit_FlickAssist and bestPixelDist and bestPixelDist > 100 then
+            local flickSpeed = (Flags.Legit_FlickSpeed or 8) / 100
+            local desired = (bestPos - camPos).Unit
+            local newDir = camLook:Lerp(desired, flickSpeed).Unit
             local newCF = _CFrameNew(camPos, camPos + newDir)
-
-            -- apply small humanizing jitter to aim
-            local jitterDeg = Flags.Legit_Aim_Jitter or 0
-            if jitterDeg and jitterDeg > 0 then
-                local yaw = (_MathRandom() * 2 - 1) * jitterDeg
-                local pitch = (_MathRandom() * 2 - 1) * jitterDeg
-                newCF = newCF * _CFrameAngles(_MathRad(-pitch), _MathRad(yaw), 0)
-            end
-
-            if Flags.Legit_RCS then
-                local rcs = (Flags.Legit_RCS_Power or 1) * 0.01
-                newCF = newCF * _CFrameAngles(-rcs, 0, 0)
-            end
-
             camera.CFrame = newCF
         end
-
-        -- Conservative Auto-Fire: fire when target is near crosshair and satisfies visibility/fire-rate checks
-        if Flags.Legit_AutoFire then
-            local weapon = (Cache and Cache.Client) and Cache.Client.fgun or nil
-            local fireRate = (weapon and weapon.FireRate and weapon.FireRate.Value) or 0.1
+        
+        -- Micro corrections
+        if Flags.Legit_MicroCorrections and bestPixelDist and bestPixelDist < 30 then
             local now = _Tick()
-            local threshold = Flags.Legit_AutoFire_Threshold or Flags.Legit_AutoFire_Threshold or 25
-
-            local visiblePass = true
-            if Flags.Legit_VisibleOnly and bestPlayer and bestPlayer.Character then
-                local success, hit = pcall(function()
-                    local param = _RaycastParamsNew()
-                    param.FilterDescendantsInstances = {camera, workspace.Ray_Ignore, workspace.Debris, char, bestPlayer.Character}
-                    param.FilterType = Enum.RaycastFilterType.Blacklist
-                    param.IgnoreWater = true
-                    local dir = bestPos - camPos
-                    return workspaceRaycast(workspace, camPos, dir, param)
-                end)
-                if success and hit and hit.Instance and not hit.Instance:IsDescendantOf(bestPlayer.Character) then
-                    visiblePass = false
-                end
+            if now - microCorrectionTime > 0.1 + _MathRandom() * 0.2 then
+                microCorrectionTime = now
+                local desired = (bestPos - camPos).Unit
+                local correction = camLook:Lerp(desired, 0.05).Unit
+                local newCF = _CFrameNew(camPos, camPos + correction)
+                camera.CFrame = newCF
             end
-
-            -- handle pending scheduled fire (reaction delay)
-            if Legit._pendingFire then
-                if now >= Legit._pendingFire.time then
-                    local p = Legit._pendingFire
-                    -- only fire if target still valid
-                    if p.player == bestPlayer and visiblePass and bestPixelDist and bestPixelDist <= threshold then
-                        local hitchOK = (Legit.Target and Legit.Target.Hitchance or 0) >= (Flags.Legit_MinHitchance or 0)
-                        if hitchOK then
-                            pcall(function() Utility.FakeShoot(p.params) end)
-                            Legit._lastShoot = now
-                        end
-                    end
-                    Legit._pendingFire = nil
-                end
+        end
+        
+        -- Triggerbot with human-like timing
+        if Flags.Legit_Triggerbot and bestPixelDist and bestPixelDist < 20 then
+            local now = _Tick()
+            local triggerDelay = (Flags.Legit_TriggerDelay or 50) / 1000
+            
+            -- Check if mouse button is held
+            local mb1 = InputService and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+            if not mb1 then return end
+            
+            if not Legit._pendingTrigger then
+                Legit._pendingTrigger = now + triggerDelay + (_MathRandom() * 0.05)
             end
-
-            if visiblePass and bestPixelDist and bestPixelDist <= threshold then
-                -- optional require MB1 to allow autofire
-                if Flags.Legit_AutoFire_RequireMB1 then
-                    local mb1 = InputService and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-                    if not mb1 then return end
-                end
-
-                if not Legit._lastShoot or now - Legit._lastShoot >= fireRate then
-                    -- build minimally useful params for FakeShoot so client registers hit
-                    local params = {}
-                    local boneName = (Flags.Legit_TargetBone == 1 and "Head") or (Flags.Legit_TargetBone == 2 and "Chest") or (Flags.Legit_TargetBone == 3 and "Pelvis") or "Head"
+            
+            if now >= Legit._pendingTrigger and now - Legit._lastTrigger > 0.1 then
+                local weapon = (Cache and Cache.Client) and Cache.Client.fgun or nil
+                local fireRate = (weapon and weapon.FireRate and weapon.FireRate.Value) or 0.1
+                
+                if now - Legit._lastTrigger >= fireRate then
+                    local boneName = (Flags.Legit_TargetBone == 1 and "Head") or "Chest"
                     local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
                     local part = bestPlayer and bestPlayer.Character and bestPlayer.Character:FindFirstChild(partName)
+                    
                     if part then
-                        params[#params+1] = {Hit = part, Enter = part.Position, Normal = _Vector3New()}
-                    end
-
-                    local reaction = Flags.Legit_AutoFire_Reaction or 0
-                    if reaction and reaction > 0 then
-                        Legit._pendingFire = { time = now + reaction + (_MathRandom() * 0.05), params = params, player = bestPlayer }
-                    else
-                        local hitchOK = (Legit.Target and Legit.Target.Hitchance or 0) >= (Flags.Legit_MinHitchance or 0)
-                        if hitchOK then
-                            pcall(function() Utility.FakeShoot(params) end)
-                            Legit._lastShoot = now
-                        end
+                        local params = {{Hit = part, Enter = part.Position, Normal = _Vector3New()}}
+                        pcall(function() Utility.FakeShoot(params) end)
+                        Legit._lastTrigger = now
+                        Legit._pendingTrigger = nil
                     end
                 end
             end
+        else
+            Legit._pendingTrigger = nil
         end
     end)
 end
@@ -5917,59 +5803,46 @@ end
 
 do
     local RageTab = Window:AddTab("Rage")
-    -- Legit tab: a 'legit' alternative to Rage with smoother, humanized aim helpers
+    -- Legit tab: Human-like aim assistance with realistic behavior patterns
     local LegitTab = Window:AddTab("Legit")
     local LegitMainGroup = LegitTab:AddLeftGroupbox("Main")
-    local LegitAimGroup = LegitTab:AddCenterGroupbox("Aim")
-    local LegitSettingsBox = LegitTab:AddRightTabbox("Settings")
-    local LegitAdvanced = LegitSettingsBox:AddTab("Advanced")
+    local LegitAimGroup = LegitTab:AddCenterGroupbox("Aim Settings")
+    local LegitHumanGroup = LegitTab:AddRightGroupbox("Humanization")
 
-    LegitMainGroup:AddToggle("Legit_Enabled", {Text = "Enable Legit"})
+    -- Main Controls
+    LegitMainGroup:AddToggle("Legit_Enabled", {Text = "Enable Legit Aim"})
          :AddKeyPicker("LegitKeyBind", {Default = '...', SyncToggleState = false, Mode = "Hold", Text = "Legit Aim", NoUI = false})
 
-    LegitMainGroup:AddToggle("Legit_AimAssist", {Text = "Aim Assist"})
-    LegitMainGroup:AddToggle("Legit_SilentAim", {Text = "Silent Aim"})
-    LegitMainGroup:AddToggle("Legit_AutoFire", {Text = "Auto-Fire"})
-    LegitMainGroup:AddDropdown("Legit_Mode", {Text = "Mode", Values = {"Always", "Toggle", "Hold"}, Multi = false, Default = 2})
-    LegitMainGroup:AddToggle("Legit_ShowFOV", {Text = "Show FOV Overlay"})
-    LegitMainGroup:AddToggle("Legit_MouseFOV", {Text = "Center FOV on Mouse"})
-    LegitMainGroup:AddToggle("Legit_VisibleOnly", {Text = "Visible Targets Only"})
-    LegitMainGroup:AddToggle("Legit_AutoFire_RequireMB1", {Text = "Require Mouse Button 1 for Auto-Fire"})
-    -- show hitchance/priority and adaptive smoothing
-    LegitMainGroup:AddToggle("Legit_ShowTargetInfo", {Text = "Show Target Info (Priority/Hitchance)"})
-    LegitMainGroup:AddToggle("Legit_AdaptiveSmoothing", {Text = "Adaptive Smoothing"})
+    LegitMainGroup:AddToggle("Legit_AimAssist", {Text = "Aim Assistance"})
+    LegitMainGroup:AddToggle("Legit_Triggerbot", {Text = "Trigger Bot"})
+    LegitMainGroup:AddToggle("Legit_FlickAssist", {Text = "Flick Assistance"})
+    LegitMainGroup:AddDropdown("Legit_TargetBone", {Text = "Target Bone", Values = {"Head", "Chest"}, Multi = false, Default = 2})
+    LegitMainGroup:AddDropdown("Legit_TargetPriority", {Text = "Target Priority", Values = {"Crosshair Distance", "World Distance"}, Multi = false, Default = 1})
+    
+    -- FOV Settings
+    LegitMainGroup:AddToggle("Legit_ShowFOV", {Text = "Show FOV Circle"})
+    LegitMainGroup:AddSlider("Legit_FOV", {Text = 'Field of View', Default = 45, Min = 10, Max = 120, Rounding = 0, Compact = false})
+    LegitMainGroup:AddLabel('FOV Color'):AddColorPicker('Legit_FOV_Color', {Default = _Color3FromRGB(255,255,255), Title = 'FOV Color', Transparency = 0})
 
     ConnectKeyPickerToToggle("Legit_Enabled", "LegitKeyBind")
 
-    LegitAimGroup:AddSlider("Legit_Smooth", {Text = 'Smooth', Default = 6, Min = 0, Max = 50, Rounding = 0, Compact = false})
-    LegitAimGroup:AddDropdown("Legit_SmoothMode", {Text = "Smooth Mode", Values = {"Linear", "EaseIn", "EaseOut", "SmoothDamp"}, Multi = false, Default = 1})
-    LegitAimGroup:AddSlider("Legit_FOV", {Text = 'FOV', Default = 8, Min = 1, Max = 180, Rounding = 0, Compact = false})
-    LegitAimGroup:AddDropdown("Legit_TargetBone", {Text = "Target bone", Values = {"Head", "Chest", "Pelvis"}, Multi = false, Default = 1})
-    LegitAimGroup:AddDropdown("Legit_TargetPriority", {Text = "Target Priority", Values = {"Crosshair", "Distance", "Lowest Health", "Visible"}, Multi = false, Default = 1})
-    LegitAimGroup:AddToggle("Legit_Predict", {Text = "Prediction (Lead Target)"})
-    LegitAimGroup:AddToggle("Legit_Triggerbot", {Text = "Triggerbot"})
-    LegitAimGroup:AddDropdown("Legit_Triggerbot_Mode", {Text = "Trigger Mode", Values = {"Hold", "Toggle", "Always"}, Multi = false, Default = 1})
-    LegitAimGroup:AddToggle("Legit_Triggerbot_RequireMB1", {Text = "Require Mouse Button 1 for Triggerbot"})
-    LegitAimGroup:AddToggle("Legit_Multipoint", {Text = "Multipoint (Multiple Hitpoints)"})
-    LegitAimGroup:AddSlider("Legit_Multipoint_Quality", {Text = 'Multipoint Quality', Default = 3, Min = 1, Max = 5, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_Multipoint_Radius", {Text = 'Multipoint Radius', Default = 0.08, Min = 0.01, Max = 0.25, Rounding = 3, Compact = false})
-    LegitAimGroup:AddSlider("Legit_AutoFire_Threshold", {Text = 'Auto-Fire Pixel Threshold', Default = 25, Min = 1, Max = 200, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_AutoFire_Reaction", {Text = 'Auto-Fire Reaction (s)', Default = 0, Min = 0, Max = 0.5, Rounding = 2, Compact = false})
-    LegitAimGroup:AddSlider("Legit_Aim_Jitter", {Text = 'Aim Jitter (deg)', Default = 0, Min = 0, Max = 5, Rounding = 2, Compact = false})
-
-    LegitAdvanced:AddToggle("Legit_RCS", {Text = "Recoil Control (RCS)"})
-    LegitAdvanced:AddSlider("Legit_RCS_Power", {Text = 'RCS Power', Default = 1, Min = 0, Max = 10, Rounding = 1, Compact = false})
-    LegitAdvanced:AddSlider("Legit_MinHitchance", {Text = 'Min Hitchance for Auto-Fire', Default = 25, Min = 1, Max = 100, Rounding = 0, Compact = false})
-    LegitAdvanced:AddToggle("Legit_Backtrack", {Text = "Backtrack (Use Past Positions)"})
-    LegitAdvanced:AddSlider("Legit_Backtrack_Time", {Text = 'Backtrack Time (ms)', Default = 200, Min = 50, Max = 1000, Rounding = 0, Compact = false})
-    LegitAdvanced:AddSlider("Legit_AimStrength", {Text = 'Aim Strength (%)', Default = 100, Min = 0, Max = 100, Rounding = 0, Compact = false})
-    LegitAdvanced:AddDropdown("Legit_AimLockMode", {Text = "Aim Lock Mode", Values = {"Off", "Sticky", "Persist"}, Multi = false, Default = 1})
-    LegitAdvanced:AddToggle("Legit_ShowTargetName", {Text = "Show Target Name"})
-    LegitAdvanced:AddToggle("Legit_UseScreenGuiFallback", {Text = "Use ScreenGui Fallback (if Drawing unavailable)"})
-
-    LegitMainGroup:AddLabel('FOV Color'):AddColorPicker('Legit_FOV_Color', {Default = _Color3FromRGB(255,255,255), Title = 'Color', Transparency = 0})
-    LegitMainGroup:AddSlider('Legit_FOV_Thickness', {Text = 'FOV Thickness', Default = 1, Min = 1, Max = 8, Rounding = 0, Compact = false})
-    LegitMainGroup:AddSlider('Legit_FOV_Opacity', {Text = 'FOV Opacity', Default = 1, Min = 0, Max = 1, Rounding = 2, Compact = false})
+    -- Aim Settings
+    LegitAimGroup:AddSlider("Legit_Smooth", {Text = 'Smoothness', Default = 12, Min = 1, Max = 30, Rounding = 0, Compact = false})
+    LegitAimGroup:AddSlider("Legit_Strength", {Text = 'Aim Strength', Default = 65, Min = 10, Max = 100, Rounding = 0, Compact = false})
+    LegitAimGroup:AddSlider("Legit_MaxDistance", {Text = 'Max Target Distance', Default = 300, Min = 50, Max = 1000, Rounding = 0, Compact = false})
+    LegitAimGroup:AddSlider("Legit_TriggerDelay", {Text = 'Trigger Delay (ms)', Default = 50, Min = 0, Max = 300, Rounding = 0, Compact = false})
+    LegitAimGroup:AddSlider("Legit_FlickSpeed", {Text = 'Flick Speed', Default = 8, Min = 1, Max = 20, Rounding = 0, Compact = false})
+    
+    -- Humanization Settings
+    LegitHumanGroup:AddToggle("Legit_HumanMovement", {Text = "Human-like Movement"})
+    LegitHumanGroup:AddToggle("Legit_ReactionTime", {Text = "Reaction Time Simulation"})
+    LegitHumanGroup:AddToggle("Legit_MicroCorrections", {Text = "Micro Corrections"})
+    LegitHumanGroup:AddToggle("Legit_VisibilityCheck", {Text = "Smart Visibility Check"})
+    LegitHumanGroup:AddDropdown("Legit_AimStyle", {Text = "Aim Style", Values = {"Conservative", "Balanced", "Aggressive"}, Multi = false, Default = 2})
+    LegitHumanGroup:AddSlider("Legit_ReactionMin", {Text = 'Min Reaction Time (ms)', Default = 120, Min = 50, Max = 300, Rounding = 0, Compact = false})
+    LegitHumanGroup:AddSlider("Legit_ReactionMax", {Text = 'Max Reaction Time (ms)', Default = 200, Min = 100, Max = 500, Rounding = 0, Compact = false})
+    LegitHumanGroup:AddSlider("Legit_Shakiness", {Text = 'Hand Shakiness', Default = 2, Min = 0, Max = 10, Rounding = 1, Compact = false})
+    LegitHumanGroup:AddSlider("Legit_Overshoot", {Text = 'Overshoot Chance (%)', Default = 15, Min = 0, Max = 50, Rounding = 0, Compact = false})
 
 local MiscTab = Window:AddTab("Misc")
 local VisualsTab = Window:AddTab("Visuals")
@@ -6402,45 +6275,28 @@ CrosshairTab:AddSlider("Crosshair_Rotation_Speed", {Text = "Crosshair rotation s
     do
         local defaults = {
             Legit_Enabled = false,
-            Legit_Smooth = 6,
-            Legit_FOV = 8,
-            Legit_TargetBone = 1,
-            Legit_Predict = false,
-            Legit_SilentAim = false,
             Legit_AimAssist = false,
-            Legit_AutoFire = false,
-            Legit_RCS = false,
-            Legit_RCS_Power = 1,
-            Legit_Mode = "Toggle",
-            Legit_ShowFOV = false,
-            Legit_MouseFOV = false,
-            Legit_VisibleOnly = false,
-            Legit_AutoFire_Threshold = 25,
-            Legit_FOV_Color = _Color3FromRGB(255,255,255),
-            Legit_FOV_Thickness = 1,
-            Legit_FOV_Opacity = 1,
-            Legit_AutoFire_RequireMB1 = false,
-            Legit_AutoFire_Reaction = 0,
-            Legit_Aim_Jitter = 0,
-            Legit_SmoothMode = "Linear",
-            Legit_TargetPriority = "Crosshair",
-            -- triggerbot / multipoint / backtrack / misc
             Legit_Triggerbot = false,
-            Legit_Triggerbot_Mode = "Hold",
-            Legit_Triggerbot_RequireMB1 = false,
-            Legit_Multipoint = false,
-            Legit_Multipoint_Quality = 3,
-            Legit_Multipoint_Radius = 0.08,
-            Legit_Backtrack = false,
-            Legit_Backtrack_Time = 200,
-            Legit_AimStrength = 100,
-            Legit_AimLockMode = "Off",
-            Legit_ShowTargetName = true,
-            Legit_UseScreenGuiFallback = false,
-            -- new legit features defaults
-            Legit_ShowTargetInfo = true,
-            Legit_MinHitchance = 25,
-            Legit_AdaptiveSmoothing = false,
+            Legit_FlickAssist = false,
+            Legit_TargetBone = 2,
+            Legit_TargetPriority = "Crosshair Distance",
+            Legit_ShowFOV = false,
+            Legit_FOV = 45,
+            Legit_FOV_Color = _Color3FromRGB(255,255,255),
+            Legit_Smooth = 12,
+            Legit_Strength = 65,
+            Legit_MaxDistance = 300,
+            Legit_TriggerDelay = 50,
+            Legit_FlickSpeed = 8,
+            Legit_HumanMovement = true,
+            Legit_ReactionTime = true,
+            Legit_MicroCorrections = true,
+            Legit_ReactionMin = 120,
+            Legit_ReactionMax = 200,
+            Legit_Shakiness = 2,
+            Legit_Overshoot = 15,
+            Legit_VisibilityCheck = true,
+            Legit_AimStyle = "Balanced"
         }
 
         for k, v in next, defaults do
