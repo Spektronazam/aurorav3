@@ -5619,6 +5619,7 @@ ConnectKeyPickerToToggle("FakeLags_PreventReplication", "PreventReplicaKeyBind")
 AnotherGroup:AddToggle("KillAll_Enabled", {Text = "Kill all (Enemies)"})
     :AddKeyPicker("KillAllKeyBind", {Default = '...', SyncToggleState = false, Mode = "Toggle", Text = "Kill all (Enemies)", NoUI = false})
 ConnectKeyPickerToToggle("KillAll_Enabled", "KillAllKeyBind")
+AnotherGroup:AddSlider("KillAll_PingMultiPlayer", {Text = "Ping Compensation", Default = 0, Min = -250, Max = 250, Rounding = 0, Compact = false})
 AnotherGroup:AddDropdown("KillAll_TargetMode", {Text = "Target Mode", Values = {"All", "Selected Player"}, Default = "All", AllowNull = false})
 local KillAllPlayerDropdown = AnotherGroup:AddDropdown("KillAll_SelectedPlayer", {Text = "Select Player", Values = {}, Default = "", AllowNull = true})
 
@@ -5633,7 +5634,6 @@ Options["KillAll_TargetMode"]:OnChanged(function(Value)
         KillAllPlayerDropdown.Holder.Visible = (Value == "Selected Player")
     end
 end)
-AnotherGroup:AddSlider("KillAll_PingMultiPlayer", {Text = "Ping Compensation", Default = 0, Min = -250, Max = 250, Rounding = 0, Compact = false})
 AnotherGroup:AddDivider()
 
 AnotherGroup:AddToggle("HitSounds_Enabled", {Text = "Enable Hitsounds"})
