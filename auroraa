@@ -1,4 +1,6 @@
-warn'made by tenP'
+warn'(aurora will continue to be reworked by spekt and tenp, the build you are using is build v3, v2 is decommisioned')
+warn'aurora'
+warn'reworked by tenP'
 warn'1'
 warn'3'
 warn'3'
@@ -126,6 +128,134 @@ local _TaskSpawn = clonefunction(task.spawn)
 
 local workspaceRaycast = workspace.Raycast
 
+-- Enhanced Error Handling System
+local ErrorHandler = {}
+ErrorHandler.LogEnabled = true
+ErrorHandler.MaxRetries = 3
+ErrorHandler.RetryDelay = 0.1
+
+function ErrorHandler.SafeCall(func, ...)
+    local success, result = _Pcall(func, ...)
+    if not success then
+        if ErrorHandler.LogEnabled then
+            warn("[Aurora Error Handler] Function call failed:", result)
+        end
+        return nil, result
+    end
+    return result
+end
+
+function ErrorHandler.SafeCallWithRetry(func, maxRetries, ...)
+    maxRetries = maxRetries or ErrorHandler.MaxRetries
+    local args = {...}
+    
+    for attempt = 1, maxRetries do
+        local success, result = _Pcall(func, _TableUnpack(args))
+        if success then
+            return result
+        end
+        
+        if ErrorHandler.LogEnabled and attempt < maxRetries then
+            warn("[Aurora Error Handler] Attempt", attempt, "failed, retrying:", result)
+        end
+        
+        if attempt < maxRetries then
+            _TaskWait(ErrorHandler.RetryDelay)
+        end
+    end
+    
+    if ErrorHandler.LogEnabled then
+        warn("[Aurora Error Handler] All retry attempts failed for function call")
+    end
+    return nil
+end
+
+function ErrorHandler.SafeGetService(serviceName)
+    return ErrorHandler.SafeCallWithRetry(function()
+        return cloneref(_GetService(game, serviceName))
+    end, 2)
+end
+
+function ErrorHandler.SafeFindFirstChild(parent, childName, timeout)
+    if not parent then return nil end
+    timeout = timeout or 5
+    
+    local startTime = _Tick()
+    while _Tick() - startTime < timeout do
+        local success, child = _Pcall(_FindFirstChild, parent, childName)
+        if success and child then
+            return child
+        end
+        _TaskWait(0.1)
+    end
+    
+    if ErrorHandler.LogEnabled then
+        warn("[Aurora Error Handler] Failed to find child:", childName, "in parent:", parent.Name or "Unknown")
+    end
+    return nil
+end
+
+function ErrorHandler.SafeCharacterAccess(player)
+    if not player then return nil end
+    
+    local character = player.Character
+    if not character then return nil end
+    
+    local humanoid = ErrorHandler.SafeFindFirstChild(character, "Humanoid", 1)
+    local rootPart = ErrorHandler.SafeFindFirstChild(character, "HumanoidRootPart", 1)
+    
+    if not humanoid or not rootPart then return nil end
+    
+    -- Additional health check
+    local success, health = _Pcall(function() return humanoid.Health end)
+    if not success or health <= 0 then return nil end
+    
+    return character, humanoid, rootPart
+end
+
+function ErrorHandler.SafeRemoteCall(remote, ...)
+    if not remote then return false end
+    
+    return ErrorHandler.SafeCall(function(...)
+        if remote.ClassName == "RemoteEvent" then
+            remote:FireServer(...)
+        elseif remote.ClassName == "RemoteFunction" then
+            return remote:InvokeServer(...)
+        end
+    end, ...)
+end
+
+-- Safe property access with fallback
+function ErrorHandler.SafeGetProperty(obj, property, fallback)
+    return ErrorHandler.SafeCall(function()
+        if obj and obj[property] ~= nil then
+            return obj[property]
+        end
+        return fallback
+    end) or fallback
+end
+
+-- Safe property setting with validation
+function ErrorHandler.SafeSetProperty(obj, property, value)
+    return ErrorHandler.SafeCall(function()
+        if obj and property and value ~= nil then
+            obj[property] = value
+            return true
+        end
+        return false
+    end)
+end
+
+-- Safe table access with fallback
+function ErrorHandler.SafeTableAccess(tbl, key, fallback)
+    return ErrorHandler.SafeCall(function()
+        if type(tbl) == "table" and tbl[key] ~= nil then
+            return tbl[key]
+        end
+        return fallback
+    end) or fallback
+end
+
 repeat _TaskWait() until _IsLoaded(game)
 if getgenv().Loaded ~= nil then return end
 
@@ -134,28 +264,41 @@ local Build = "AuroraNN"
 local LoadTick = _Tick()
 local checkcalled = false
 
--- Core Vars
-local HttpService = cloneref(_GetService(game,"HttpService"))
-local InputService = cloneref(_GetService(game,"UserInputService"))
-local replicatedStorage = cloneref(_GetService(game,"ReplicatedStorage"))
-local Stats = cloneref(_GetService(game, "Stats"))
-local TextService = cloneref(_GetService(game,"TextService"))
-local Teams = cloneref(_GetService(game,"Teams"))
-local Players = cloneref(_GetService(game,"Players"))
-local RunService = cloneref(_GetService(game,"RunService"))
-local TweenService = cloneref(_GetService(game,"TweenService"))
+-- Core Vars with Error Handling
+local HttpService = ErrorHandler.SafeGetService("HttpService")
+local InputService = ErrorHandler.SafeGetService("UserInputService")
+local replicatedStorage = ErrorHandler.SafeGetService("ReplicatedStorage")
+local Stats = ErrorHandler.SafeGetService("Stats")
+local TextService = ErrorHandler.SafeGetService("TextService")
+local Teams = ErrorHandler.SafeGetService("Teams")
+local Players = ErrorHandler.SafeGetService("Players")
+local RunService = ErrorHandler.SafeGetService("RunService")
+local TweenService = ErrorHandler.SafeGetService("TweenService")
+
+-- Validate critical services
+if not Players or not RunService then
+    error("[Aurora] Critical services failed to load. Cannot continue.")
+end
 local executor = syn and "Synapse" or nil
 local platform = "Windows"
 if not executor then
     executor, platform = identifyexecutor()
 end
-local Lighting = cloneref(_GetService(game,"Lighting"))
-local RenderStepped = RunService.RenderStepped
-local LocalPlayer = Players.LocalPlayer
-local camera = cloneref(workspace.CurrentCamera)
-local viewportSize = camera.ViewportSize
-local Mouse = _GetMouse(LocalPlayer)
-local SoundService = cloneref(_GetService(game,"SoundService"))
+local Lighting = ErrorHandler.SafeGetService("Lighting")
+local RenderStepped = RunService and RunService.RenderStepped
+local LocalPlayer = Players and Players.LocalPlayer
+local camera = ErrorHandler.SafeCall(function() return cloneref(workspace.CurrentCamera) end)
+local viewportSize = camera and ErrorHandler.SafeCall(function() return camera.ViewportSize end)
+local Mouse = LocalPlayer and ErrorHandler.SafeCall(_GetMouse, LocalPlayer)
+local SoundService = ErrorHandler.SafeGetService("SoundService")
+
+-- Validate critical components
+if not LocalPlayer then
+    error("[Aurora] LocalPlayer not found. Cannot continue.")
+end
+if not camera then
+    error("[Aurora] Camera not found. Cannot continue.")
+end
 local CoreGui = _Instancenew("ScreenGui")
 local spring = loadstring(_HttpGet(game, "https://raw.githubusercontent.com/Quenty/NevermoreEngine/5a429e871d54646ba54011c18321e77afa76d657/Modules/Shared/Physics/Spring.lua"))()
 local Signaling = loadstring(_HttpGet(game, "https://raw.githubusercontent.com/Quenty/NevermoreEngine/version2/Modules/Shared/Events/Signal.lua"))()
@@ -163,14 +306,38 @@ local Events = replicatedStorage:WaitForChild("Events", 1/0)
 local HitPart = Events:WaitForChild("HitPart", 1/0)
 local playerSpawned = Signaling.new()
 local playerDied = Signaling.new()
-local Crosshairs = LocalPlayer.PlayerGui.GUI.Crosshairs
+local Crosshairs = ErrorHandler.SafeCall(function()
+    local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+    if not playerGui then return nil end
+    local gui = ErrorHandler.SafeFindFirstChild(playerGui, "GUI", 2)
+    if not gui then return nil end
+    return ErrorHandler.SafeFindFirstChild(gui, "Crosshairs", 2)
+end)
+
 local ScriptCacheFolder = _Instancenew("Folder", workspace)
 ScriptCacheFolder.Name = "ScriptCacheFolder"
 CoreGui.ResetOnSpawn = false
 
-local ChatFrame = LocalPlayer.PlayerGui.GUI.Main.Chats
-ChatFrame.DisplayChat:Destroy()
-local ChatUI = ChatFrame.Parent
+local ChatFrame = ErrorHandler.SafeCall(function()
+    local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+    if not playerGui then return nil end
+    local gui = ErrorHandler.SafeFindFirstChild(playerGui, "GUI", 2)
+    if not gui then return nil end
+    local main = ErrorHandler.SafeFindFirstChild(gui, "Main", 2)
+    if not main then return nil end
+    return ErrorHandler.SafeFindFirstChild(main, "Chats", 2)
+end)
+
+local ChatUI
+if ChatFrame then
+    ErrorHandler.SafeCall(function()
+        local displayChat = ErrorHandler.SafeFindFirstChild(ChatFrame, "DisplayChat", 1)
+        if displayChat then
+            displayChat:Destroy()
+        end
+    end)
+    ChatUI = ChatFrame.Parent
+end
 
 do
     local ProtectGui = protectgui or protect_gui or (syn and syn.protect_gui) or (function(p) 
@@ -5142,7 +5309,13 @@ local RavenENV = {
     },
     Utility = {},
     Cache = {
-        Client = getsenv(_FindFirstChild(LocalPlayer, "PlayerGui").Client),
+        Client = ErrorHandler.SafeCall(function()
+            local playerGui = ErrorHandler.SafeFindFirstChild(LocalPlayer, "PlayerGui", 2)
+            if not playerGui then return nil end
+            local client = ErrorHandler.SafeFindFirstChild(playerGui, "Client", 2)
+            if not client then return nil end
+            return getsenv(client)
+        end),
         HitModifiers = {
             ["Head"] = 4,
             ["FakeHead"] = 4,
@@ -5225,13 +5398,7 @@ local Movement = RavenENV.Movement
 local Misc = RavenENV.Misc
 local Calculations = RavenENV.Calculations
 local Esp = RavenENV.Esp
-    RavenENV.Legit = {
-        Target = {
-            TargetPosition = nil,
-            TargetPlayer = nil,
-        }
-    }
-    local Legit = RavenENV.Legit
+
 local Window = Library:CreateWindow({
     Title = "Aurora.pw",
     Center = true,
@@ -5240,446 +5407,6 @@ local Window = Library:CreateWindow({
     MenuFadeTime = 0
 })
 
--- Legit module: Human-like aim assistance with realistic behavior patterns
-do
-    -- Humanization variables
-    local lastTargetSwitch = 0
-    local currentTarget = nil
-    local aimStartTime = 0
-    local lastReactionTime = 0
-    local overshootActive = false
-    local overshootTarget = nil
-    local microCorrectionTime = 0
-    local shakinessSeed = _MathRandom() * 1000
-    local visibilityCache = {}
-    local lastVisibilityCheck = 0
-    local aimStyleSeed = _MathRandom() * 1000
-    local currentAimPattern = nil
-    local patternStartTime = 0
-    
-    -- Bezier curve function for smooth human-like movement
-    local function bezierCurve(t, p0, p1, p2, p3)
-        local u = 1 - t
-        local tt = t * t
-        local uu = u * u
-        local uuu = uu * u
-        local ttt = tt * t
-        
-        return uuu * p0 + 3 * uu * t * p1 + 3 * u * tt * p2 + ttt * p3
-    end
-    
-    -- Generate human-like reaction time
-    local function getReactionTime()
-        local minTime = (Flags.Legit_ReactionMin or 120) / 1000
-        local maxTime = (Flags.Legit_ReactionMax or 200) / 1000
-        return minTime + _MathRandom() * (maxTime - minTime)
-    end
-    
-    -- Add hand shakiness to aim
-    local function addShakiness(vector, intensity)
-        if not Flags.Legit_HumanMovement or intensity <= 0 then return vector end
-        
-        local time = _Tick() * 10 + shakinessSeed
-        local shakeX = _MathSin(time * 1.7) * intensity * 0.001
-        local shakeY = _MathCos(time * 2.3) * intensity * 0.001
-        local shakeZ = _MathSin(time * 1.1) * intensity * 0.0005
-        
-        return vector + _Vector3New(shakeX, shakeY, shakeZ)
-    end
-    
-    -- Advanced visibility check with caching
-    local function isTargetVisible(player, targetPos)
-        if not Flags.Legit_VisibilityCheck then return true end
-        
-        local now = _Tick()
-        local cacheKey = tostring(player) .. "_" .. tostring(targetPos)
-        
-        -- Use cached result if recent (60ms cache)
-        if visibilityCache[cacheKey] and now - visibilityCache[cacheKey].time < 0.06 then
-            return visibilityCache[cacheKey].visible
-        end
-        
-        local char = LocalPlayer.Character
-        if not char then return false end
-        
-        local camPos = camera.CFrame.Position
-        local direction = targetPos - camPos
-        
-        local success, result = pcall(function()
-            local raycastParams = _RaycastParamsNew()
-            raycastParams.FilterDescendantsInstances = {
-                camera, 
-                workspace.Ray_Ignore, 
-                workspace.Debris, 
-                char,
-                player.Character
-            }
-            raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-            raycastParams.IgnoreWater = true
-            
-            local hit = workspaceRaycast(workspace, camPos, direction, raycastParams)
-            return not hit or hit.Instance:IsDescendantOf(player.Character)
-        end)
-        
-        local visible = success and result
-        visibilityCache[cacheKey] = {visible = visible, time = now}
-        
-        return visible
-    end
-    
-    -- Generate randomized aiming patterns based on style
-    local function getAimPattern(style, targetDistance)
-        local patterns = {
-            Conservative = {
-                speed = {0.3, 0.6},
-                smoothness = {15, 25},
-                overshoot = {5, 15},
-                corrections = {2, 4}
-            },
-            Balanced = {
-                speed = {0.5, 0.8},
-                smoothness = {8, 18},
-                overshoot = {10, 25},
-                corrections = {3, 6}
-            },
-            Aggressive = {
-                speed = {0.7, 1.2},
-                smoothness = {4, 12},
-                overshoot = {15, 35},
-                corrections = {4, 8}
-            }
-        }
-        
-        local pattern = patterns[style] or patterns.Balanced
-        local distanceFactor = _MathClamp(targetDistance / 200, 0.5, 2)
-        
-        return {
-            speed = pattern.speed[1] + _MathRandom() * (pattern.speed[2] - pattern.speed[1]),
-            smoothness = pattern.smoothness[1] + _MathRandom() * (pattern.smoothness[2] - pattern.smoothness[1]),
-            overshoot = (pattern.overshoot[1] + _MathRandom() * (pattern.overshoot[2] - pattern.overshoot[1])) / distanceFactor,
-            corrections = _MathFloor(pattern.corrections[1] + _MathRandom() * (pattern.corrections[2] - pattern.corrections[1]))
-        }
-    end
-    
-    -- Human-like aiming with randomized patterns
-    local function applyHumanAiming(currentLook, targetDirection, pixelDistance)
-        local now = _Tick()
-        local aimStyle = Options and Options.Legit_AimStyle and Options.Legit_AimStyle.Value or "Balanced"
-        
-        -- Generate new pattern if needed
-        if not currentAimPattern or now - patternStartTime > 2 + _MathRandom() * 3 then
-            currentAimPattern = getAimPattern(aimStyle, pixelDistance or 100)
-            patternStartTime = now
-        end
-        
-        local pattern = currentAimPattern
-        local baseSpeed = pattern.speed * ((Flags.Legit_Strength or 65) / 100)
-        
-        -- Distance-based speed adjustment
-        local distanceMultiplier = 1
-        if pixelDistance then
-            if pixelDistance > 150 then
-                distanceMultiplier = 1.3 + _MathRandom() * 0.4  -- Faster for distant targets
-            elseif pixelDistance < 30 then
-                distanceMultiplier = 0.4 + _MathRandom() * 0.3  -- Slower for close targets
-            else
-                distanceMultiplier = 0.7 + _MathRandom() * 0.6  -- Variable for medium distance
-            end
-        end
-        
-        local finalSpeed = baseSpeed * distanceMultiplier
-        local smoothness = pattern.smoothness * (1 + _MathRandom() * 0.3)
-        
-        -- Apply smoothing with randomization
-        local aimFactor = _MathClamp(finalSpeed / smoothness, 0.01, 1)
-        
-        -- Add human-like curve variations
-        local curveVariation = _MathSin(now * 2 + aimStyleSeed) * 0.1
-        aimFactor = aimFactor * (1 + curveVariation)
-        
-        return currentLook:Lerp(targetDirection, aimFactor).Unit
-    end
-    
-    -- FOV circle drawing
-    local fovCircle
-    do
-        local ok, DrawingLib = pcall(function() return Drawing end)
-        if ok and DrawingLib then
-            local success = pcall(function()
-                fovCircle = Drawing.new('Circle')
-                fovCircle.Visible = false
-                fovCircle.Color = _Color3FromRGB(255, 255, 255)
-                fovCircle.Thickness = 2
-                fovCircle.NumSides = 64
-                fovCircle.Transparency = 0.3
-            end)
-            if not success then
-                fovCircle = nil
-            end
-        end
-    end
-    
-    -- Initialize legit module state
-    Legit._lastTrigger = 0
-    Legit._pendingTrigger = nil
-    
-    RunService.RenderStepped:Connect(function()
-        local char = LocalPlayer.Character
-        if not Utility.IsPlayerAlive(char) then
-            if fovCircle then fovCircle.Visible = false end
-            Legit.Target.TargetPosition = nil
-            Legit.Target.TargetPlayer = nil
-            currentTarget = nil
-            return
-        end
-        
-        -- Check if legit aim is active
-        local keyOpt = Options and Options["LegitKeyBind"]
-        local active = Flags.Legit_Enabled and keyOpt and keyOpt:GetState()
-        
-        if not active then
-            if fovCircle then fovCircle.Visible = false end
-            Legit.Target.TargetPosition = nil
-            Legit.Target.TargetPlayer = nil
-            currentTarget = nil
-            return
-        end
-        
-        local camCF = camera.CFrame
-        local camPos, camLook = camCF.Position, camCF.LookVector
-        local fov = Flags.Legit_FOV or 45
-        local maxDistance = Flags.Legit_MaxDistance or 300
-        local mX, mY = Mouse.X, Mouse.Y
-        
-        -- Update FOV circle
-        if fovCircle and Flags.Legit_ShowFOV then
-            local centerX, centerY = viewportSize.X * 0.5, viewportSize.Y * 0.5
-            local yaw = math.rad(fov / 2)
-            local rotCF = camCF * _CFrameAngles(0, yaw, 0)
-            local rotPoint = rotCF.Position + rotCF.LookVector * 100
-            local rotScreen, rotOn = Calculations:worldToViewportPoint(rotPoint, false, 0)
-            
-            if rotScreen and rotOn then
-                local dx, dy = rotScreen.X - centerX, rotScreen.Y - centerY
-                local radius = math.sqrt(dx*dx + dy*dy)
-                fovCircle.Position = _Vector2New(centerX, centerY)
-                fovCircle.Radius = radius
-                fovCircle.Color = Flags.Legit_FOV_Color or _Color3FromRGB(255,255,255)
-                fovCircle.Visible = true
-            else
-                fovCircle.Visible = false
-            end
-        elseif fovCircle then
-            fovCircle.Visible = false
-        end
-        
-        -- Find best target with visibility check
-        local bestScore, bestPos, bestPlayer, bestPixelDist = math.huge, nil, nil, nil
-        local visibleTargets = {}
-        
-        for _, pdata in next, PlayerModule.storage do
-            if not (pdata.alive and pdata.enemy) or pdata.protected or pdata.god or not pdata.character then continue end
-            
-            local boneName = (Flags.Legit_TargetBone == 1 and "Head") or "Chest"
-            local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
-            local part = pdata.character:FindFirstChild(partName)
-            if not part then continue end
-            
-            local pos = part.Position
-            local dir = pos - camPos
-            local distance = dir.Magnitude
-            
-            -- Distance check
-            if distance > maxDistance then continue end
-            
-            -- FOV check
-            local ang = _MathDeg(math.acos(_MathClamp(camLook:Dot(dir.Unit), -1, 1)))
-            if ang > fov / 2 then continue end
-            
-            local screenPos, onScreen = Calculations:worldToViewportPoint(pos, false, 0)
-            if not screenPos or not onScreen then continue end
-            
-            local dx, dy = screenPos.X - mX, screenPos.Y - mY
-            local pixelDist = math.sqrt(dx*dx + dy*dy)
-            
-            -- Advanced visibility check
-            local isVisible = isTargetVisible(pdata.player, pos)
-            
-            -- Scoring based on priority with visibility bonus
-            local priority = Options and Options.Legit_TargetPriority and Options.Legit_TargetPriority.Value or "Crosshair Distance"
-            local score = 0
-            
-            if priority == "Crosshair Distance" then
-                score = pixelDist
-            elseif priority == "World Distance" then
-                score = distance
-            else
-                score = pixelDist
-            end
-            
-            -- Heavily prioritize visible targets
-            if Flags.Legit_VisibilityCheck then
-                if isVisible then
-                    score = score * 0.1  -- Make visible targets much more attractive
-                    visibleTargets[#visibleTargets + 1] = {
-                        player = pdata.player,
-                        pos = pos,
-                        pixelDist = pixelDist,
-                        score = score
-                    }
-                else
-                    score = score * 3  -- Deprioritize non-visible targets
-                end
-            end
-            
-            if score < bestScore then
-                bestScore = score
-                bestPos = pos
-                bestPlayer = pdata.player
-                bestPixelDist = pixelDist
-            end
-        end
-        
-        -- If visibility check is enabled and we have visible targets, prefer them
-        if Flags.Legit_VisibilityCheck and #visibleTargets > 0 then
-            -- Sort visible targets by score and add some randomization
-            table.sort(visibleTargets, function(a, b) return a.score < b.score end)
-            
-            -- Sometimes pick a slightly suboptimal target for human-like behavior
-            local targetIndex = 1
-            if #visibleTargets > 1 and _MathRandom() < 0.3 then
-                targetIndex = _MathMin(2, #visibleTargets)
-            end
-            
-            local selectedTarget = visibleTargets[targetIndex]
-            bestPlayer = selectedTarget.player
-            bestPos = selectedTarget.pos
-            bestPixelDist = selectedTarget.pixelDist
-        end
-        
-        -- Handle target switching with reaction time
-        if bestPlayer ~= currentTarget then
-            if Flags.Legit_ReactionTime then
-                local now = _Tick()
-                if now - lastTargetSwitch > getReactionTime() then
-                    currentTarget = bestPlayer
-                    lastTargetSwitch = now
-                    aimStartTime = now
-                end
-            else
-                currentTarget = bestPlayer
-                aimStartTime = _Tick()
-            end
-        end
-        
-        if not bestPos or currentTarget ~= bestPlayer then
-            Legit.Target.TargetPosition = nil
-            Legit.Target.TargetPlayer = nil
-            return
-        end
-        
-        Legit.Target.TargetPosition = bestPos
-        Legit.Target.TargetPlayer = bestPlayer
-        
-        -- Advanced aim assistance with randomized patterns
-        if Flags.Legit_AimAssist then
-            local desired = (bestPos - camPos).Unit
-            
-            -- Add overshoot behavior
-            if Flags.Legit_HumanMovement and _MathRandom() * 100 < (Flags.Legit_Overshoot or 15) and not overshootActive then
-                overshootActive = true
-                overshootTarget = desired + (desired - camLook) * (0.05 + _MathRandom() * 0.1)
-                _TaskSpawn(function()
-                    _TaskWait(0.05 + _MathRandom() * 0.15)
-                    overshootActive = false
-                end)
-            end
-            
-            local targetDir = overshootActive and overshootTarget or desired
-            
-            -- Apply advanced human-like aiming
-            if Flags.Legit_HumanMovement then
-                local newDir = applyHumanAiming(camLook, targetDir, bestPixelDist)
-                newDir = addShakiness(newDir, Flags.Legit_Shakiness or 2)
-                
-                -- Add bezier curve smoothing for extra realism
-                local t = _MathClamp((Flags.Legit_Strength or 65) / 200, 0.01, 0.5)
-                local p0 = camLook
-                local p3 = newDir
-                local p1 = p0 + (p3 - p0) * (0.2 + _MathRandom() * 0.2)
-                local p2 = p0 + (p3 - p0) * (0.6 + _MathRandom() * 0.2)
-                
-                local finalDir = bezierCurve(t, p0, p1, p2, p3).Unit
-                local newCF = _CFrameNew(camPos, camPos + finalDir)
-                camera.CFrame = newCF
-            else
-                -- Simple mode with basic humanization
-                local smooth = Flags.Legit_Smooth or 12
-                local strength = (Flags.Legit_Strength or 65) / 100
-                local aimFactor = _MathClamp(1 / smooth, 0.01, 1) * strength
-                
-                local newDir = camLook:Lerp(targetDir, aimFactor).Unit
-                local newCF = _CFrameNew(camPos, camPos + newDir)
-                camera.CFrame = newCF
-            end
-        end
-        
-        -- Flick assistance for quick target acquisition
-        if Flags.Legit_FlickAssist and bestPixelDist and bestPixelDist > 100 then
-            local flickSpeed = (Flags.Legit_FlickSpeed or 8) / 100
-            local desired = (bestPos - camPos).Unit
-            local newDir = camLook:Lerp(desired, flickSpeed).Unit
-            local newCF = _CFrameNew(camPos, camPos + newDir)
-            camera.CFrame = newCF
-        end
-        
-        -- Micro corrections
-        if Flags.Legit_MicroCorrections and bestPixelDist and bestPixelDist < 30 then
-            local now = _Tick()
-            if now - microCorrectionTime > 0.1 + _MathRandom() * 0.2 then
-                microCorrectionTime = now
-                local desired = (bestPos - camPos).Unit
-                local correction = camLook:Lerp(desired, 0.05).Unit
-                local newCF = _CFrameNew(camPos, camPos + correction)
-                camera.CFrame = newCF
-            end
-        end
-        
-        -- Triggerbot with human-like timing
-        if Flags.Legit_Triggerbot and bestPixelDist and bestPixelDist < 20 then
-            local now = _Tick()
-            local triggerDelay = (Flags.Legit_TriggerDelay or 50) / 1000
-            
-            -- Check if mouse button is held
-            local mb1 = InputService and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-            if not mb1 then return end
-            
-            if not Legit._pendingTrigger then
-                Legit._pendingTrigger = now + triggerDelay + (_MathRandom() * 0.05)
-            end
-            
-            if now >= Legit._pendingTrigger and now - Legit._lastTrigger > 0.1 then
-                local weapon = (Cache and Cache.Client) and Cache.Client.fgun or nil
-                local fireRate = (weapon and weapon.FireRate and weapon.FireRate.Value) or 0.1
-                
-                if now - Legit._lastTrigger >= fireRate then
-                    local boneName = (Flags.Legit_TargetBone == 1 and "Head") or "Chest"
-                    local partName = (Cache.hitgroups[boneName] and Cache.hitgroups[boneName][1]) or "Head"
-                    local part = bestPlayer and bestPlayer.Character and bestPlayer.Character:FindFirstChild(partName)
-                    
-                    if part then
-                        local params = {{Hit = part, Enter = part.Position, Normal = _Vector3New()}}
-                        pcall(function() Utility.FakeShoot(params) end)
-                        Legit._lastTrigger = now
-                        Legit._pendingTrigger = nil
-                    end
-                end
-            end
-        else
-            Legit._pendingTrigger = nil
-        end
-    end)
-end
 
 local forcefieldAnimations = {["Off"] = "rbxassetid://0",["Web"] = "rbxassetid://301464986",["Scan"] = "rbxassetid://5843010904",["Swirl"] = "rbxassetid://8133639623",["Checkerboard"] = "rbxassetid://5790215150",["Christmas"] = "rbxassetid://6853532738",["Player"] = "rbxassetid://4494641460",["Shield"] = "rbxassetid://361073795",["Dots"] = "rbxassetid://5830615971",["Bubbles"] = "rbxassetid://1461576423",["Matrix"] = "rbxassetid://10713189068",["Groove"] = "rbxassetid://10785404176",["Cloud"] = "rbxassetid://5176277457",["Sky"] = "rbxassetid://1494603972",["Smudge"] = "rbxassetid://6096634060",["Scrapes"] = "rbxassetid://6248583558",["Galaxy"] = "rbxassetid://1120738433",["Stars"] = "rbxassetid://598201818",["Rainbow"] = "rbxassetid://10037165803", ["Triangular"]="rbxassetid://4504368932", ["Wall"] = "rbxassetid://4271279"}
 local forcefieldAnimationsDropDown = {}
@@ -5803,46 +5530,6 @@ end
 
 do
     local RageTab = Window:AddTab("Rage")
-    -- Legit tab: Human-like aim assistance with realistic behavior patterns
-    local LegitTab = Window:AddTab("Legit")
-    local LegitMainGroup = LegitTab:AddLeftGroupbox("Main")
-    local LegitAimGroup = LegitTab:AddCenterGroupbox("Aim Settings")
-    local LegitHumanGroup = LegitTab:AddRightGroupbox("Humanization")
-
-    -- Main Controls
-    LegitMainGroup:AddToggle("Legit_Enabled", {Text = "Enable Legit Aim"})
-         :AddKeyPicker("LegitKeyBind", {Default = '...', SyncToggleState = false, Mode = "Hold", Text = "Legit Aim", NoUI = false})
-
-    LegitMainGroup:AddToggle("Legit_AimAssist", {Text = "Aim Assistance"})
-    LegitMainGroup:AddToggle("Legit_Triggerbot", {Text = "Trigger Bot"})
-    LegitMainGroup:AddToggle("Legit_FlickAssist", {Text = "Flick Assistance"})
-    LegitMainGroup:AddDropdown("Legit_TargetBone", {Text = "Target Bone", Values = {"Head", "Chest"}, Multi = false, Default = 2})
-    LegitMainGroup:AddDropdown("Legit_TargetPriority", {Text = "Target Priority", Values = {"Crosshair Distance", "World Distance"}, Multi = false, Default = 1})
-    
-    -- FOV Settings
-    LegitMainGroup:AddToggle("Legit_ShowFOV", {Text = "Show FOV Circle"})
-    LegitMainGroup:AddSlider("Legit_FOV", {Text = 'Field of View', Default = 45, Min = 10, Max = 120, Rounding = 0, Compact = false})
-    LegitMainGroup:AddLabel('FOV Color'):AddColorPicker('Legit_FOV_Color', {Default = _Color3FromRGB(255,255,255), Title = 'FOV Color', Transparency = 0})
-
-    ConnectKeyPickerToToggle("Legit_Enabled", "LegitKeyBind")
-
-    -- Aim Settings
-    LegitAimGroup:AddSlider("Legit_Smooth", {Text = 'Smoothness', Default = 12, Min = 1, Max = 30, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_Strength", {Text = 'Aim Strength', Default = 65, Min = 10, Max = 100, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_MaxDistance", {Text = 'Max Target Distance', Default = 300, Min = 50, Max = 1000, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_TriggerDelay", {Text = 'Trigger Delay (ms)', Default = 50, Min = 0, Max = 300, Rounding = 0, Compact = false})
-    LegitAimGroup:AddSlider("Legit_FlickSpeed", {Text = 'Flick Speed', Default = 8, Min = 1, Max = 20, Rounding = 0, Compact = false})
-    
-    -- Humanization Settings
-    LegitHumanGroup:AddToggle("Legit_HumanMovement", {Text = "Human-like Movement"})
-    LegitHumanGroup:AddToggle("Legit_ReactionTime", {Text = "Reaction Time Simulation"})
-    LegitHumanGroup:AddToggle("Legit_MicroCorrections", {Text = "Micro Corrections"})
-    LegitHumanGroup:AddToggle("Legit_VisibilityCheck", {Text = "Smart Visibility Check"})
-    LegitHumanGroup:AddDropdown("Legit_AimStyle", {Text = "Aim Style", Values = {"Conservative", "Balanced", "Aggressive"}, Multi = false, Default = 2})
-    LegitHumanGroup:AddSlider("Legit_ReactionMin", {Text = 'Min Reaction Time (ms)', Default = 120, Min = 50, Max = 300, Rounding = 0, Compact = false})
-    LegitHumanGroup:AddSlider("Legit_ReactionMax", {Text = 'Max Reaction Time (ms)', Default = 200, Min = 100, Max = 500, Rounding = 0, Compact = false})
-    LegitHumanGroup:AddSlider("Legit_Shakiness", {Text = 'Hand Shakiness', Default = 2, Min = 0, Max = 10, Rounding = 1, Compact = false})
-    LegitHumanGroup:AddSlider("Legit_Overshoot", {Text = 'Overshoot Chance (%)', Default = 15, Min = 0, Max = 50, Rounding = 0, Compact = false})
 
 local MiscTab = Window:AddTab("Misc")
 local VisualsTab = Window:AddTab("Visuals")
@@ -5935,6 +5622,20 @@ AnotherGroup:AddToggle("KillAll_Enabled", {Text = "Kill all (Enemies)"})
     :AddKeyPicker("KillAllKeyBind", {Default = '...', SyncToggleState = false, Mode = "Toggle", Text = "Kill all (Enemies)", NoUI = false})
 ConnectKeyPickerToToggle("KillAll_Enabled", "KillAllKeyBind")
 AnotherGroup:AddSlider("KillAll_PingMultiPlayer", {Text = "Ping Compensation", Default = 0, Min = -250, Max = 250, Rounding = 0, Compact = false})
+AnotherGroup:AddDropdown("KillAll_TargetMode", {Text = "Target Mode", Values = {"All", "Selected Player"}, Default = "All", AllowNull = false})
+local KillAllPlayerDropdown = AnotherGroup:AddDropdown("KillAll_SelectedPlayer", {Text = "Select Player", Values = {}, Default = "", AllowNull = true})
+
+-- Initially hide the player selection dropdown
+if KillAllPlayerDropdown and KillAllPlayerDropdown.Holder then
+    KillAllPlayerDropdown.Holder.Visible = false
+end
+
+-- Add callback to show/hide player dropdown based on target mode
+Options["KillAll_TargetMode"]:OnChanged(function(Value)
+    if KillAllPlayerDropdown and KillAllPlayerDropdown.Holder then
+        KillAllPlayerDropdown.Holder.Visible = (Value == "Selected Player")
+    end
+end)
 AnotherGroup:AddDivider()
 
 AnotherGroup:AddToggle("HitSounds_Enabled", {Text = "Enable Hitsounds"})
@@ -5974,7 +5675,7 @@ ExploitsGroup:AddToggle("Remove_Spread", {Text = "No-spread"})
     MovementGroup:AddToggle("Movement_SlideWalk", {Text = "Slide Walk"})
     MovementGroup:AddToggle("Movement_SpeedHack", {Text = "Speed Hack"})
     MovementGroup:AddToggle("Movement_AutoHop", {Text = "Auto Hop"})
-    MovementGroup:AddDropdown("Movement_SpeedHackMethod", {Text = "Speed Hack Method", Values = {"Velocity", "CFrame"}, Default = "Downwards", AllowNull = false})
+    MovementGroup:AddDropdown("Movement_SpeedHackMethod", {Text = "Speed Hack Method", Values = {"Velocity", "CFrame", "Pulse"}, Default = "Velocity", AllowNull = false})
     MovementGroup:AddSlider("Movement_Speed", {Text = "Speed", Default = 25, Min = 0, Max = 150, Rounding = 0, Compact = false})
     MovementGroup:AddToggle("Movement_OverrideSpeedHack", {Text = "Override Speed Hack"})
     :AddKeyPicker("OverrideSpeedHackKeyBind", {Default = '...', SyncToggleState = false, Mode = "Toggle", Text = "Override Speed Hack", NoUI = false})
@@ -6271,40 +5972,7 @@ CrosshairTab:AddSlider("Crosshair_Rotation_Speed", {Text = "Crosshair rotation s
     SaveManager:SetLibrary(Library) 
     SaveManager:IgnoreThemeSettings()
     SaveManager:BuildConfigSection(SettingsTab)
-    -- Ensure default values for newly added Legit flags so UI/loaders have predictable state
-    do
-        local defaults = {
-            Legit_Enabled = false,
-            Legit_AimAssist = false,
-            Legit_Triggerbot = false,
-            Legit_FlickAssist = false,
-            Legit_TargetBone = 2,
-            Legit_TargetPriority = "Crosshair Distance",
-            Legit_ShowFOV = false,
-            Legit_FOV = 45,
-            Legit_FOV_Color = _Color3FromRGB(255,255,255),
-            Legit_Smooth = 12,
-            Legit_Strength = 65,
-            Legit_MaxDistance = 300,
-            Legit_TriggerDelay = 50,
-            Legit_FlickSpeed = 8,
-            Legit_HumanMovement = true,
-            Legit_ReactionTime = true,
-            Legit_MicroCorrections = true,
-            Legit_ReactionMin = 120,
-            Legit_ReactionMax = 200,
-            Legit_Shakiness = 2,
-            Legit_Overshoot = 15,
-            Legit_VisibilityCheck = true,
-            Legit_AimStyle = "Balanced"
-        }
 
-        for k, v in next, defaults do
-            if Flags[k] == nil then
-                Flags[k] = v
-            end
-        end
-    end
     ThemeManager:ApplyToTab(SettingsTab)
 
     getgenv().PreviewPlayer = EspPreviewManager:Init(Window, VisualsTab)
@@ -6566,11 +6234,13 @@ do --Funcs
             ["Metallic"] = _Materials.Glass
         }
         local IsPlayerAlive = function(Player)
-            if Player and _FindFirstChild(Player, "Humanoid") and _FindFirstChild(Player, "Humanoid").Health > 0 then
-                return true
-            else
-                return false
-            end
+            return ErrorHandler.SafeCall(function()
+                if not Player then return false end
+                local humanoid = _FindFirstChild(Player, "Humanoid")
+                if not humanoid then return false end
+                local health = humanoid.Health
+                return health and health > 0
+            end) or false
         end
         Utility.IsPlayerAlive = IsPlayerAlive
         function Utility.CryptPosition(Pos) 
@@ -6587,21 +6257,32 @@ do --Funcs
         end
 		    	 
         function Utility.UpdAmmo()
-            local equipped = Cache.Client.equipped
-            local ammo = 0
-            local primm = Cache.Client.vars.ammocount
-            local secondary = Cache.Client.vars.ammocount2
-            if equipped == "primary" and primm >= 1 then
-                ammo = primm - 1;
-                Cache.Client.vars.ammocount = ammo
-            elseif equipped == "secondary" and secondary >= 1 then
-                ammo = secondary - 1;
-                Cache.Client.vars.ammocount2 = ammo;
-            end
-            if ammo == 0 and _FindFirstChild(Cache.Client.fgun, "Melee") == nil then
-                Cache.Client.autoreload()
-            end
-            Cache.Client.countammo()        
+            ErrorHandler.SafeCall(function()
+                if not Cache.Client or not Cache.Client.vars then return end
+                
+                local equipped = ErrorHandler.SafeGetProperty(Cache.Client, "equipped", "none")
+                local ammo = 0
+                local primm = ErrorHandler.SafeTableAccess(Cache.Client.vars, "ammocount", 0)
+                local secondary = ErrorHandler.SafeTableAccess(Cache.Client.vars, "ammocount2", 0)
+                
+                if equipped == "primary" and primm and primm >= 1 then
+                    ammo = primm - 1
+                    ErrorHandler.SafeSetProperty(Cache.Client.vars, "ammocount", ammo)
+                elseif equipped == "secondary" and secondary and secondary >= 1 then
+                    ammo = secondary - 1
+                    ErrorHandler.SafeSetProperty(Cache.Client.vars, "ammocount2", ammo)
+                end
+                
+                if ammo == 0 and Cache.Client.fgun and _FindFirstChild(Cache.Client.fgun, "Melee") == nil then
+                    if Cache.Client.autoreload then
+                        Cache.Client.autoreload()
+                    end
+                end
+                
+                if Cache.Client.countammo then
+                    Cache.Client.countammo()
+                end
+            end)        
         end
         function Utility.FakeShoot(Params)
             local client = Cache and Cache.Client
@@ -7040,6 +6721,28 @@ do --Funcs
             end
         end
         Utility.AutoWall = CalculateDamageModifier
+        
+        -- Function to update player list for Kill All dropdown
+        local function UpdateKillAllPlayerList()
+            local playerNames = {}
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    table.insert(playerNames, player.Name)
+                end
+            end
+            -- Update the dropdown values
+            if Options and Options["KillAll_SelectedPlayer"] then
+                Options["KillAll_SelectedPlayer"]:SetValues(playerNames)
+            end
+        end
+        
+        -- Update player list every 2 seconds
+        task.spawn(function()
+            while true do
+                UpdateKillAllPlayerList()
+                task.wait(2)
+            end
+        end)
 	    	    
         local prepWaitUntil2 = 0
         RunService.RenderStepped:Connect(function()
@@ -7070,17 +6773,36 @@ do --Funcs
             local weapon = Cache.Client.fgun
             if not weapon or weapon == "none" then return end
             
+            local targetMode = Flags["KillAll_TargetMode"] or "All"
+            local selectedPlayer = Flags["KillAll_SelectedPlayer"] or ""
+            
             for _, p in next, PlayerModule.storage do
                 if p.alive and not p.god then
-                    HitPart:FireServer(
-                        p.head,
-                        {X = 0/0, Y = 0/0, Z = 0/0},
-                        "Banana",
-                        1,
-                        _FindFirstChild(LocalPlayer.Character, "Gun"),
-                        nil, math.huge, false, false,
-                        _Vector3New(), 1, _Vector3New(), true
-                    )
+                    -- Check target mode
+                    local shouldTarget = false
+                    if targetMode == "All" then
+                        shouldTarget = true
+                    elseif targetMode == "Selected Player" and selectedPlayer ~= "" then
+                        -- Check if this player matches the selected player name
+                        if p.player and p.player.Name == selectedPlayer then
+                            shouldTarget = true
+                        end
+                    end
+                    
+                    if shouldTarget then
+                        ErrorHandler.SafeRemoteCall(HitPart,
+                            p.head,
+                            {X = 0/0, Y = 0/0, Z = 0/0},
+                            "Banana",
+                            1,
+                            ErrorHandler.SafeCall(function()
+                                local char = LocalPlayer.Character
+                                return char and _FindFirstChild(char, "Gun")
+                            end),
+                            nil, math.huge, false, false,
+                            _Vector3New(), 1, _Vector3New(), true
+                        )
+                    end
                 end
             end
         end)
@@ -7117,16 +6839,34 @@ do --Funcs
                 return
             end
 
-            local weapon = Cache.Client.fgun
+            local weapon = Cache.Client and Cache.Client.fgun
             if not weapon then return end
-            local weaponData = _FindFirstChild(replicatedStorage.Weapons, weapon.Name)
-            if weaponData and _FindFirstChild(weaponData, "Melee") then return end
+            
+            local weaponData = replicatedStorage and ErrorHandler.SafeFindFirstChild(replicatedStorage, "Weapons", 1)
+            if weaponData then
+                weaponData = ErrorHandler.SafeFindFirstChild(weaponData, weapon.Name, 1)
+                if weaponData and ErrorHandler.SafeFindFirstChild(weaponData, "Melee", 1) then return end
+            end
 
-            local camCF = camera.CFrame
+            if not camera then return end
+            local camCF = ErrorHandler.SafeCall(function() return camera.CFrame end)
+            if not camCF then return end
+            
             local camPos, camLook = camCF.Position, camCF.LookVector
-            local origin = (Flags.RageBot_Origins == "Camera" and camPos)
-                or (Flags.RageBot_Origins == "Head" and char:FindFirstChild("Head") and char.Head.Position)
-                or (char:FindFirstChild("Gun") and char.Gun:FindFirstChild("Flash") and char.Gun.Flash.Position)
+            local origin = ErrorHandler.SafeCall(function()
+                if Flags.RageBot_Origins == "Camera" then
+                    return camPos
+                elseif Flags.RageBot_Origins == "Head" then
+                    local head = ErrorHandler.SafeFindFirstChild(char, "Head", 0.5)
+                    return head and head.Position
+                else
+                    local gun = ErrorHandler.SafeFindFirstChild(char, "Gun", 0.5)
+                    if gun then
+                        local flash = ErrorHandler.SafeFindFirstChild(gun, "Flash", 0.5)
+                        return flash and flash.Position
+                    end
+                end
+            end)
             if not origin then return end
 
             local enemiesFound = false
@@ -7287,12 +7027,15 @@ do --Funcs
                 RageBot.Target.Hit = best.instance
                 RageBot.Target.Origin = best.from
 
-                HitPart:FireServer(
+                ErrorHandler.SafeRemoteCall(HitPart,
                     best.instance,
                     Flags.RageBot_Prediction and {X = 0/0, Y = 0/0, Z = 0/0} or RageBot.Target.CryptedPosition,
                     weapon.Name,
                     0,
-                    _FindFirstChild(LocalPlayer.Character, "Gun"),
+                    ErrorHandler.SafeCall(function()
+                        local char = LocalPlayer.Character
+                        return char and _FindFirstChild(char, "Gun")
+                    end),
                     nil, 1, false, best.wallbang,
                     _Vector3New(), 0, _Vector3New(), true
                 )
@@ -7343,8 +7086,11 @@ do --Funcs
                 return
             end
     
-            local isClimbing = LocalPlayer.Character and _FindFirstChild(LocalPlayer.Character, "Climbing") ~= nil
-            Events.ControlTurn:FireServer(angle, isClimbing)
+            local isClimbing = ErrorHandler.SafeCall(function()
+                local char = LocalPlayer.Character
+                return char and _FindFirstChild(char, "Climbing") ~= nil
+            end) or false
+            ErrorHandler.SafeRemoteCall(Events.ControlTurn, angle, isClimbing)
         end
     
     
@@ -7409,30 +7155,35 @@ do --Funcs
         end
         
         RunService.RenderStepped:Connect(function()
-            if not Flags["AntiAim_Enabled"] then return end
-    
-            local char = LocalPlayer.Character
-            if not Utility.IsPlayerAlive(char) then
-                if char and _FindFirstChild(char, "Humanoid") then
-                    char.Humanoid.AutoRotate = true
+            ErrorHandler.SafeCall(function()
+                if not ErrorHandler.SafeTableAccess(Flags, "AntiAim_Enabled", false) then return end
+        
+                local char = LocalPlayer.Character
+                if not Utility.IsPlayerAlive(char) then
+                    if char then
+                        local humanoid = ErrorHandler.SafeFindFirstChild(char, "Humanoid", 0.5)
+                        if humanoid then
+                            ErrorHandler.SafeCall(function() humanoid.AutoRotate = true end)
+                        end
+                    end
+                    return
                 end
-                return
-            end
-    
-            AntiAim.PitchControl()
-            AntiAim.YawControl()
+        
+                AntiAim.PitchControl()
+                AntiAim.YawControl()
+            end)
         end)
     end
 	    	 
     do --Movement
         function Movement.GetCharacter()
-            local character = LocalPlayer.Character
-            if not character then return nil end
-            local root = _FindFirstChild(character, "HumanoidRootPart")
-            local humanoid = _FindFirstChild(character, "Humanoid")
-            if not Utility.IsPlayerAlive(character) then return nil end
-            if not root or not humanoid then return nil end
-            return character, root, humanoid
+            return ErrorHandler.SafeCall(function()
+                local character, humanoid, rootPart = ErrorHandler.SafeCharacterAccess(LocalPlayer)
+                if not character or not humanoid or not rootPart then
+                    return nil
+                end
+                return character, rootPart, humanoid
+            end)
         end
         
         function Movement.GetYRotation(cframe)
@@ -7441,34 +7192,90 @@ do --Funcs
         end
         	    	 
         function Movement.GetMoveDirection()
-            local dir = Vector3.zero
-            if _IsKeyDown(InputService, Enum.KeyCode.W) then dir += _Vector3New(0, 0, -1) end
-            if _IsKeyDown(InputService, Enum.KeyCode.S) then dir += _Vector3New(0, 0, 1) end
-            if _IsKeyDown(InputService, Enum.KeyCode.A) then dir += _Vector3New(-1, 0, 0) end
-            if _IsKeyDown(InputService, Enum.KeyCode.D) then dir += _Vector3New(1, 0, 0) end
-            return dir.Magnitude > 0 and dir.Unit or nil
+            return ErrorHandler.SafeCall(function()
+                if not InputService then return nil end
+                
+                local dir = Vector3.zero
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.W) then 
+                    dir += _Vector3New(0, 0, -1) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.S) then 
+                    dir += _Vector3New(0, 0, 1) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.A) then 
+                    dir += _Vector3New(-1, 0, 0) 
+                end
+                if ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.D) then 
+                    dir += _Vector3New(1, 0, 0) 
+                end
+                return dir.Magnitude > 0 and dir.Unit or nil
+            end)
         end
         
+        -- Pulse method variables
+        local pulseTimer = 0
+        local pulseInterval = 0.1 -- Pulse every 100ms
+        local pulseActive = false
+        
         RunService.Stepped:Connect(function()
-            local character, root, humanoid = Movement.GetCharacter()
-            if not character then return end
-            if not Flags["Movement_SpeedHack"] then return end   
-            if _IsKeyDown(InputService, Enum.KeyCode.Space) then
-                humanoid.Jump = true  
-            end   
-            local moveDir = Movement.GetMoveDirection()
-            if not moveDir then return end
-    
-            local camCF = camera.CFrame
-            local forward = Movement.GetYRotation(camCF):VectorToWorldSpace(moveDir)
-            local Speed = Flags["Movement_OverrideSpeedHack"] and Flags["Movement_OverrideSpeed"] or Flags["Movement_Speed"]
-            if Flags["Movement_SpeedHackMethod"] == "Velocity" then
-                local velocity = forward * Speed
-                root.Velocity = _Vector3New(velocity.X, root.Velocity.Y, velocity.Z)
-            elseif Flags["Movement_SpeedHackMethod"] == "CFrame" then
-                local offset = forward * (Speed / 50)
-                root.CFrame += _Vector3New(offset.X, 0, offset.Z)
-            end
+            ErrorHandler.SafeCall(function()
+                local character, root, humanoid = Movement.GetCharacter()
+                if not character or not root or not humanoid then return end
+                if not Flags["Movement_SpeedHack"] then return end
+                
+                -- Safe space key check
+                if InputService and ErrorHandler.SafeCall(_IsKeyDown, InputService, Enum.KeyCode.Space) then
+                    ErrorHandler.SafeCall(function() humanoid.Jump = true end)
+                end
+                
+                local moveDir = Movement.GetMoveDirection()
+                if not moveDir then return end
+                
+                if not camera then return end
+                local camCF = ErrorHandler.SafeCall(function() return camera.CFrame end)
+                if not camCF then return end
+                
+                local forward = Movement.GetYRotation(camCF):VectorToWorldSpace(moveDir)
+                local Speed = Flags["Movement_OverrideSpeedHack"] and Flags["Movement_OverrideSpeed"] or Flags["Movement_Speed"]
+                
+                if Flags["Movement_SpeedHackMethod"] == "Velocity" then
+                    ErrorHandler.SafeCall(function()
+                        local velocity = forward * Speed
+                        root.Velocity = _Vector3New(velocity.X, root.Velocity.Y, velocity.Z)
+                    end)
+                elseif Flags["Movement_SpeedHackMethod"] == "CFrame" then
+                    ErrorHandler.SafeCall(function()
+                        local offset = forward * (Speed / 50)
+                        root.CFrame += _Vector3New(offset.X, 0, offset.Z)
+                    end)
+                elseif Flags["Movement_SpeedHackMethod"] == "Pulse" then
+                    ErrorHandler.SafeCall(function()
+                        local currentTime = _Tick()
+                        
+                        -- Check if it's time for a pulse
+                        if currentTime - pulseTimer >= pulseInterval then
+                            pulseTimer = currentTime
+                            pulseActive = true
+                            
+                            -- Apply a strong velocity pulse
+                            local pulseVelocity = forward * (Speed * 2.5) -- Stronger pulse
+                            root.Velocity = _Vector3New(pulseVelocity.X, root.Velocity.Y, pulseVelocity.Z)
+                            
+                            -- Schedule pulse deactivation
+                            _TaskSpawn(function()
+                                _TaskWait(0.05) -- Pulse duration: 50ms
+                                pulseActive = false
+                            end)
+                        end
+                        
+                        -- Apply slight continuous movement between pulses for smoothness
+                        if not pulseActive then
+                            local baseVelocity = forward * (Speed * 0.3) -- Reduced base speed
+                            root.Velocity = _Vector3New(baseVelocity.X, root.Velocity.Y, baseVelocity.Z)
+                        end
+                    end)
+                end
+            end)
         end)
     end
     Esp.chamsFolder = _Instancenew("Folder", CoreGui)
@@ -8507,10 +8314,16 @@ do --Funcs
     do --Visuals
         do --Camera
             RunService.RenderStepped:Connect(function()
-                if not Utility.IsPlayerAlive(LocalPlayer.Character) then return end
-                if Crosshairs.Scope.Visible ~= true then
-                    camera.FieldOfView = Flags["Camera_FieldOfView"]
-                end
+                ErrorHandler.SafeCall(function()
+                    if not Utility.IsPlayerAlive(LocalPlayer.Character) then return end
+                    if not Crosshairs or not camera then return end
+                    
+                    local scope = ErrorHandler.SafeFindFirstChild(Crosshairs, "Scope", 0.1)
+                    if not scope or scope.Visible ~= true then
+                        local fov = ErrorHandler.SafeTableAccess(Flags, "Camera_FieldOfView", 70)
+                        ErrorHandler.SafeSetProperty(camera, "FieldOfView", fov)
+                    end
+                end)
             end)
         end
         Visuals.defaultlighting = { -- fuck it
@@ -9034,6 +8847,41 @@ do --Funcs
                 Cache.Client.vars.primarystored = 133333337
                 Cache.Client.vars.ammocount2 = 133333337
                 Cache.Client.vars.secondarystored = 133333337
+            end
+            
+            if Flags["Fully_Automatic"] then
+                local weapon = Cache.Client and Cache.Client.fgun
+                if weapon and weapon ~= "none" then
+                    -- Make weapon fully automatic by modifying relevant properties
+                    local autoProperty = ErrorHandler.SafeFindFirstChild(weapon, "Auto", 0.1)
+                    if autoProperty and _IsA(autoProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(autoProperty, "Value", true)
+                    end
+                    
+                    local semiAutoProperty = ErrorHandler.SafeFindFirstChild(weapon, "SemiAuto", 0.1)
+                    if semiAutoProperty and _IsA(semiAutoProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(semiAutoProperty, "Value", false)
+                    end
+                    
+                    -- Also try common alternative property names
+                    local automaticProperty = ErrorHandler.SafeFindFirstChild(weapon, "Automatic", 0.1)
+                    if automaticProperty and _IsA(automaticProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(automaticProperty, "Value", true)
+                    end
+                    
+                    local semiProperty = ErrorHandler.SafeFindFirstChild(weapon, "Semi", 0.1)
+                    if semiProperty and _IsA(semiProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(semiProperty, "Value", false)
+                    end
+                    
+                    -- Handle FireMode property if it exists
+                    local fireModeProperty = ErrorHandler.SafeFindFirstChild(weapon, "FireMode", 0.1)
+                    if fireModeProperty and _IsA(fireModeProperty, "StringValue") then
+                        ErrorHandler.SafeSetProperty(fireModeProperty, "Value", "Auto")
+                    elseif fireModeProperty and _IsA(fireModeProperty, "NumberValue") then
+                        ErrorHandler.SafeSetProperty(fireModeProperty, "Value", 1) -- 1 typically means auto
+                    end
+                end
             end
 
         end)
