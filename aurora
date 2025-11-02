@@ -5619,6 +5619,20 @@ ConnectKeyPickerToToggle("FakeLags_PreventReplication", "PreventReplicaKeyBind")
 AnotherGroup:AddToggle("KillAll_Enabled", {Text = "Kill all (Enemies)"})
     :AddKeyPicker("KillAllKeyBind", {Default = '...', SyncToggleState = false, Mode = "Toggle", Text = "Kill all (Enemies)", NoUI = false})
 ConnectKeyPickerToToggle("KillAll_Enabled", "KillAllKeyBind")
+AnotherGroup:AddDropdown("KillAll_TargetMode", {Text = "Target Mode", Values = {"All", "Selected Player"}, Default = "All", AllowNull = false})
+local KillAllPlayerDropdown = AnotherGroup:AddDropdown("KillAll_SelectedPlayer", {Text = "Select Player", Values = {}, Default = "", AllowNull = true})
+
+-- Initially hide the player selection dropdown
+if KillAllPlayerDropdown and KillAllPlayerDropdown.Holder then
+    KillAllPlayerDropdown.Holder.Visible = false
+end
+
+-- Add callback to show/hide player dropdown based on target mode
+Options["KillAll_TargetMode"]:OnChanged(function(Value)
+    if KillAllPlayerDropdown and KillAllPlayerDropdown.Holder then
+        KillAllPlayerDropdown.Holder.Visible = (Value == "Selected Player")
+    end
+end)
 AnotherGroup:AddSlider("KillAll_PingMultiPlayer", {Text = "Ping Compensation", Default = 0, Min = -250, Max = 250, Rounding = 0, Compact = false})
 AnotherGroup:AddDivider()
 
@@ -6705,6 +6719,28 @@ do --Funcs
             end
         end
         Utility.AutoWall = CalculateDamageModifier
+        
+        -- Function to update player list for Kill All dropdown
+        local function UpdateKillAllPlayerList()
+            local playerNames = {}
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    table.insert(playerNames, player.Name)
+                end
+            end
+            -- Update the dropdown values
+            if Options and Options["KillAll_SelectedPlayer"] then
+                Options["KillAll_SelectedPlayer"]:SetValues(playerNames)
+            end
+        end
+        
+        -- Update player list every 2 seconds
+        task.spawn(function()
+            while true do
+                UpdateKillAllPlayerList()
+                task.wait(2)
+            end
+        end)
 	    	    
         local prepWaitUntil2 = 0
         RunService.RenderStepped:Connect(function()
@@ -6735,20 +6771,36 @@ do --Funcs
             local weapon = Cache.Client.fgun
             if not weapon or weapon == "none" then return end
             
+            local targetMode = Flags["KillAll_TargetMode"] or "All"
+            local selectedPlayer = Flags["KillAll_SelectedPlayer"] or ""
+            
             for _, p in next, PlayerModule.storage do
                 if p.alive and not p.god then
-                    ErrorHandler.SafeRemoteCall(HitPart,
-                        p.head,
-                        {X = 0/0, Y = 0/0, Z = 0/0},
-                        "Banana",
-                        1,
-                        ErrorHandler.SafeCall(function()
-                            local char = LocalPlayer.Character
-                            return char and _FindFirstChild(char, "Gun")
-                        end),
-                        nil, math.huge, false, false,
-                        _Vector3New(), 1, _Vector3New(), true
-                    )
+                    -- Check target mode
+                    local shouldTarget = false
+                    if targetMode == "All" then
+                        shouldTarget = true
+                    elseif targetMode == "Selected Player" and selectedPlayer ~= "" then
+                        -- Check if this player matches the selected player name
+                        if p.player and p.player.Name == selectedPlayer then
+                            shouldTarget = true
+                        end
+                    end
+                    
+                    if shouldTarget then
+                        ErrorHandler.SafeRemoteCall(HitPart,
+                            p.head,
+                            {X = 0/0, Y = 0/0, Z = 0/0},
+                            "Banana",
+                            1,
+                            ErrorHandler.SafeCall(function()
+                                local char = LocalPlayer.Character
+                                return char and _FindFirstChild(char, "Gun")
+                            end),
+                            nil, math.huge, false, false,
+                            _Vector3New(), 1, _Vector3New(), true
+                        )
+                    end
                 end
             end
         end)
