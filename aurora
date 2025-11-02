@@ -8846,6 +8846,41 @@ do --Funcs
                 Cache.Client.vars.ammocount2 = 133333337
                 Cache.Client.vars.secondarystored = 133333337
             end
+            
+            if Flags["Fully_Automatic"] then
+                local weapon = Cache.Client and Cache.Client.fgun
+                if weapon and weapon ~= "none" then
+                    -- Make weapon fully automatic by modifying relevant properties
+                    local autoProperty = ErrorHandler.SafeFindFirstChild(weapon, "Auto", 0.1)
+                    if autoProperty and _IsA(autoProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(autoProperty, "Value", true)
+                    end
+                    
+                    local semiAutoProperty = ErrorHandler.SafeFindFirstChild(weapon, "SemiAuto", 0.1)
+                    if semiAutoProperty and _IsA(semiAutoProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(semiAutoProperty, "Value", false)
+                    end
+                    
+                    -- Also try common alternative property names
+                    local automaticProperty = ErrorHandler.SafeFindFirstChild(weapon, "Automatic", 0.1)
+                    if automaticProperty and _IsA(automaticProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(automaticProperty, "Value", true)
+                    end
+                    
+                    local semiProperty = ErrorHandler.SafeFindFirstChild(weapon, "Semi", 0.1)
+                    if semiProperty and _IsA(semiProperty, "BoolValue") then
+                        ErrorHandler.SafeSetProperty(semiProperty, "Value", false)
+                    end
+                    
+                    -- Handle FireMode property if it exists
+                    local fireModeProperty = ErrorHandler.SafeFindFirstChild(weapon, "FireMode", 0.1)
+                    if fireModeProperty and _IsA(fireModeProperty, "StringValue") then
+                        ErrorHandler.SafeSetProperty(fireModeProperty, "Value", "Auto")
+                    elseif fireModeProperty and _IsA(fireModeProperty, "NumberValue") then
+                        ErrorHandler.SafeSetProperty(fireModeProperty, "Value", 1) -- 1 typically means auto
+                    end
+                end
+            end
 
         end)
 		    	  
